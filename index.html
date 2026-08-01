@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Floor — Stunt & Doubles</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#060d0a; --panel:#0d1f17; --panel2:#122618;
+  --border:rgba(52,211,153,0.15); --green:#34d399; --gdim:#1a4d36;
+  --amber:#fbbf24; --red:#f87171; --blue:#60a5fa; --purple:#a78bfa;
+  --muted:#6b8f7a; --text:#e2efe8; --white:#f0faf4;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;min-height:100vh;padding-bottom:80px;}
+
+/* LOGIN */
+#loginScreen{position:fixed;inset:0;background:var(--bg);z-index:999;display:flex;align-items:center;justify-content:center;padding:20px;}
+.login-box{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:36px 32px;max-width:380px;width:100%;text-align:center;}
+.login-logo{font-family:'IBM Plex Mono',monospace;font-size:1.1rem;color:var(--green);letter-spacing:3px;font-weight:600;margin-bottom:6px;}
+.login-sub{font-size:0.78rem;color:var(--muted);margin-bottom:28px;line-height:1.5;}
+.login-label{font-family:'IBM Plex Mono',monospace;font-size:0.62rem;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;text-align:left;margin-bottom:6px;}
+.login-input{width:100%;background:rgba(52,211,153,0.05);border:1px solid var(--border);border-radius:7px;padding:10px 14px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.9rem;margin-bottom:12px;}
+.login-input:focus{outline:none;border-color:var(--green);}
+.login-select{width:100%;background:rgba(52,211,153,0.05);border:1px solid var(--border);border-radius:7px;padding:10px 14px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.88rem;margin-bottom:20px;cursor:pointer;}
+.login-select option{background:var(--panel);}
+.login-btn{width:100%;background:var(--green);border:none;border-radius:7px;padding:12px;color:var(--bg);font-family:'IBM Plex Mono',monospace;font-size:0.8rem;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;transition:opacity 0.2s;}
+.login-btn:hover{opacity:0.85;}
+.login-error{color:var(--red);font-size:0.75rem;margin-top:10px;display:none;}
+
+/* HEADER */
+header{background:var(--panel);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;flex-wrap:wrap;gap:8px;}
+.brand{font-family:'IBM Plex Mono',monospace;font-size:0.75rem;color:var(--green);letter-spacing:2px;font-weight:600;}
+.header-mid{display:flex;align-items:center;gap:10px;}
+.who-badge{background:var(--gdim);border:1px solid rgba(52,211,153,0.3);border-radius:100px;padding:4px 12px;font-family:'IBM Plex Mono',monospace;font-size:0.62rem;color:var(--green);letter-spacing:1px;}
+.live-dot-wrap{display:flex;align-items:center;gap:5px;font-family:'IBM Plex Mono',monospace;font-size:0.6rem;color:var(--green);letter-spacing:1px;}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1.4s infinite;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:0.2;}}
+.clock{font-family:'IBM Plex Mono',monospace;font-size:0.85rem;color:var(--amber);font-weight:600;letter-spacing:1px;}
+.shift-toggle{display:flex;background:var(--bg);border:1px solid var(--border);border-radius:6px;overflow:hidden;}
+.shift-btn{padding:5px 11px;border:none;background:transparent;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:0.6rem;letter-spacing:1px;cursor:pointer;transition:all 0.2s;}
+.shift-btn.active{background:var(--gdim);color:var(--green);}
+
+/* TABS */
+.tab-bar{display:flex;background:var(--panel2);border-bottom:1px solid var(--border);overflow-x:auto;}
+.tab-btn{padding:9px 18px;border:none;background:transparent;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:0.62rem;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;border-bottom:2px solid transparent;transition:all 0.2s;white-space:nowrap;}
+.tab-btn.active{color:var(--green);border-bottom-color:var(--green);}
+.notif-badge{background:rgba(248,113,113,0.2);color:var(--red);border-radius:100px;padding:1px 6px;font-size:0.55rem;margin-left:4px;}
+
+/* SUMMARY */
+.summary-bar{display:flex;background:var(--panel2);border-bottom:1px solid var(--border);overflow-x:auto;}
+.sum-item{padding:7px 14px;border-right:1px solid var(--border);text-align:center;min-width:80px;flex-shrink:0;}
+.sum-num{font-family:'IBM Plex Mono',monospace;font-size:1.1rem;font-weight:600;}
+.sum-label{font-size:0.52rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-top:1px;}
+.cg{color:var(--green);} .cr{color:var(--red);} .ca{color:var(--amber);} .cb{color:var(--blue);} .cp{color:var(--purple);}
+
+/* BENCH / OC */
+.quick-bar{background:rgba(248,113,113,0.05);border-bottom:1px solid rgba(248,113,113,0.15);padding:7px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.qb-label{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--red);letter-spacing:1.5px;text-transform:uppercase;flex-shrink:0;}
+.chip{border-radius:100px;padding:3px 10px;font-size:0.7rem;display:flex;align-items:center;gap:4px;}
+.chip-red{background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);color:var(--red);}
+.chip-blue{background:rgba(96,165,250,0.1);border:1px solid rgba(96,165,250,0.25);color:var(--blue);}
+.chip button{background:none;border:none;cursor:pointer;font-size:0.75rem;opacity:0.6;padding:0;line-height:1;color:inherit;}
+.chip button:hover{opacity:1;}
+.add-chip{border-radius:100px;padding:3px 10px;font-size:0.68rem;cursor:pointer;transition:all 0.2s;border-style:dashed;}
+.add-chip-red{background:rgba(248,113,113,0.05);border:1px dashed rgba(248,113,113,0.3);color:rgba(248,113,113,0.5);}
+.add-chip-red:hover{color:var(--red);border-color:var(--red);}
+.add-chip-blue{background:rgba(96,165,250,0.05);border:1px dashed rgba(96,165,250,0.3);color:rgba(96,165,250,0.5);}
+.add-chip-blue:hover{color:var(--blue);border-color:var(--blue);}
+.oc-bar{background:rgba(96,165,250,0.04);border-bottom:1px solid rgba(96,165,250,0.12);padding:7px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.oc-label{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--blue);letter-spacing:1.5px;text-transform:uppercase;flex-shrink:0;}
+
+/* TAB CONTENTS */
+.tab-content{display:none;} .tab-content.active{display:block;}
+
+/* LABS */
+.labs-wrap{padding:12px 12px 0;}
+.lab-sec{margin-bottom:18px;}
+.lab-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;padding-bottom:7px;border-bottom:1px solid var(--border);}
+.lab-name{font-family:'IBM Plex Mono',monospace;font-size:0.82rem;font-weight:600;color:var(--green);letter-spacing:2px;}
+.lab-sub{font-size:0.65rem;color:var(--muted);margin-left:7px;}
+.lab-stat{font-family:'IBM Plex Mono',monospace;font-size:0.6rem;color:var(--muted);}
+.cells-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(275px,1fr));gap:10px;}
+
+/* CELL CARD */
+.cell-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color 0.2s;}
+.cell-card.st-active{border-color:rgba(52,211,153,0.3);}
+.cell-card.st-down{border-color:rgba(248,113,113,0.45);}
+.cell-card.st-eval{border-color:rgba(251,191,36,0.45);}
+.cell-card.st-idle{border-color:rgba(107,143,122,0.25);}
+.cell-hdr{display:flex;align-items:center;justify-content:space-between;padding:8px 11px;background:var(--panel2);border-bottom:1px solid var(--border);}
+.cell-id-wrap{display:flex;align-items:center;gap:6px;}
+.cell-id{font-family:'IBM Plex Mono',monospace;font-size:0.92rem;font-weight:600;color:var(--white);letter-spacing:1px;}
+.cell-editor{font-family:'IBM Plex Mono',monospace;font-size:0.55rem;color:var(--muted);background:rgba(52,211,153,0.07);border:1px solid rgba(52,211,153,0.15);border-radius:100px;padding:2px 7px;letter-spacing:0.5px;}
+.badge{font-family:'IBM Plex Mono',monospace;font-size:0.53rem;letter-spacing:1.5px;padding:3px 8px;border-radius:100px;text-transform:uppercase;cursor:pointer;border:none;transition:all 0.2s;}
+.b-active{background:rgba(52,211,153,0.12);color:var(--green);border:1px solid rgba(52,211,153,0.3);}
+.b-down{background:rgba(248,113,113,0.12);color:var(--red);border:1px solid rgba(248,113,113,0.3);}
+.b-eval{background:rgba(251,191,36,0.12);color:var(--amber);border:1px solid rgba(251,191,36,0.3);}
+.b-idle{background:rgba(107,143,122,0.1);color:var(--muted);border:1px solid rgba(107,143,122,0.2);}
+.cell-body{padding:9px 11px;display:flex;flex-direction:column;gap:6px;}
+.cell-row{display:flex;align-items:center;gap:6px;}
+.ri{font-size:0.82rem;flex-shrink:0;width:17px;text-align:center;}
+.rl{font-family:'IBM Plex Mono',monospace;font-size:0.56rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;width:66px;flex-shrink:0;}
+.ci{flex:1;background:rgba(52,211,153,0.04);border:1px solid rgba(52,211,153,0.1);border-radius:5px;padding:5px 7px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.76rem;transition:border-color 0.2s;min-width:0;}
+.ci:focus{outline:none;border-color:rgba(52,211,153,0.4);background:rgba(52,211,153,0.07);}
+.ci::placeholder{color:rgba(107,143,122,0.4);font-size:0.7rem;}
+
+/* CELL NOTES */
+.cell-notes{display:flex;flex-direction:column;gap:5px;padding-top:5px;border-top:1px solid var(--border);margin-top:1px;}
+.cn-block{border-radius:5px;overflow:hidden;border:1px solid;}
+.cn-lead{border-color:rgba(52,211,153,0.2);}
+.cn-res{border-color:rgba(251,191,36,0.2);}
+.cn-pilot{border-color:rgba(96,165,250,0.2);}
+.cn-lbl{font-family:'IBM Plex Mono',monospace;font-size:0.55rem;letter-spacing:1px;text-transform:uppercase;padding:3px 7px;}
+.cn-lead .cn-lbl{background:rgba(52,211,153,0.08);color:var(--green);}
+.cn-res .cn-lbl{background:rgba(251,191,36,0.08);color:var(--amber);}
+.cn-pilot .cn-lbl{background:rgba(96,165,250,0.08);color:var(--blue);}
+.cn-ta{width:100%;background:var(--panel);border:none;border-top:1px solid rgba(255,255,255,0.04);padding:5px 7px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.73rem;resize:none;min-height:46px;line-height:1.5;}
+.cn-ta:focus{outline:none;}
+.cn-lead .cn-ta:focus{background:rgba(52,211,153,0.03);}
+.cn-res .cn-ta:focus{background:rgba(251,191,36,0.03);}
+.cn-pilot .cn-ta:focus{background:rgba(96,165,250,0.03);}
+.cn-ta::placeholder{color:rgba(107,143,122,0.38);font-size:0.68rem;}
+
+/* DOWNTIME */
+.dt-row{display:flex;align-items:center;gap:6px;padding-top:5px;border-top:1px solid var(--border);margin-top:1px;}
+.dt-lbl{font-family:'IBM Plex Mono',monospace;font-size:0.53rem;color:var(--red);letter-spacing:1px;text-transform:uppercase;flex-shrink:0;}
+.dt-btn{padding:3px 8px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:0.56rem;letter-spacing:1px;border:none;cursor:pointer;transition:all 0.2s;}
+.dt-start{background:rgba(248,113,113,0.12);color:var(--red);border:1px solid rgba(248,113,113,0.3);}
+.dt-stop{background:rgba(52,211,153,0.12);color:var(--green);border:1px solid rgba(52,211,153,0.3);}
+.dt-disp{font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:var(--red);flex:1;}
+.dt-tot{font-family:'IBM Plex Mono',monospace;font-size:0.56rem;color:var(--muted);}
+
+/* NOTIFICATIONS TAB */
+.notif-wrap{padding:12px;}
+.notif-controls{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;}
+.notif-filter{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:5px 10px;color:var(--text);font-family:'IBM Plex Mono',monospace;font-size:0.62rem;letter-spacing:1px;}
+.notif-filter:focus{outline:none;border-color:var(--green);}
+.notif-count{font-family:'IBM Plex Mono',monospace;font-size:0.6rem;color:var(--muted);margin-left:auto;}
+.notif-list{display:flex;flex-direction:column;gap:6px;}
+.notif-item{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:flex-start;transition:border-color 0.2s;}
+.notif-item.n-status{border-left:3px solid var(--amber);}
+.notif-item.n-pilot{border-left:3px solid var(--blue);}
+.notif-item.n-robot{border-left:3px solid var(--green);}
+.notif-item.n-downtime{border-left:3px solid var(--red);}
+.notif-item.n-script{border-left:3px solid var(--purple);}
+.notif-item.n-bench{border-left:3px solid var(--red);}
+.notif-icon{font-size:1rem;flex-shrink:0;margin-top:1px;}
+.notif-body{flex:1;min-width:0;}
+.notif-who{font-family:'IBM Plex Mono',monospace;font-size:0.6rem;color:var(--green);letter-spacing:1px;margin-bottom:2px;}
+.notif-msg{font-size:0.78rem;color:var(--text);line-height:1.4;}
+.notif-msg .hl-from{color:var(--red);}
+.notif-msg .hl-to{color:var(--green);}
+.notif-msg .hl-cell{color:var(--amber);font-family:'IBM Plex Mono',monospace;font-size:0.72rem;}
+.notif-time{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--muted);white-space:nowrap;flex-shrink:0;}
+.notif-empty{padding:40px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--muted);letter-spacing:1px;}
+
+/* LOG TAB */
+.log-wrap{padding:12px;}
+.log-controls{display:flex;gap:7px;margin-bottom:10px;flex-wrap:wrap;align-items:center;}
+.log-filter{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:5px 10px;color:var(--text);font-family:'IBM Plex Mono',monospace;font-size:0.62rem;letter-spacing:1px;}
+.log-table-wrap{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden;overflow-x:auto;}
+table{width:100%;border-collapse:collapse;min-width:500px;}
+th{background:var(--panel2);font-family:'IBM Plex Mono',monospace;font-size:0.55rem;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;padding:7px 11px;text-align:left;border-bottom:1px solid var(--border);}
+td{padding:7px 11px;font-size:0.75rem;border-bottom:1px solid rgba(52,211,153,0.05);vertical-align:top;}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:rgba(52,211,153,0.03);}
+.lt{font-family:'IBM Plex Mono',monospace;font-size:0.64rem;color:var(--muted);white-space:nowrap;}
+.lc{font-family:'IBM Plex Mono',monospace;font-size:0.68rem;color:var(--green);font-weight:600;}
+.lf{font-size:0.65rem;color:var(--amber);}
+.lw{font-size:0.65rem;color:var(--blue);}
+.lfrom{color:var(--red);font-size:0.72rem;}
+.lto{color:var(--green);font-size:0.72rem;}
+
+/* NOTES TAB */
+.notes-wrap{padding:12px;display:flex;flex-direction:column;gap:12px;}
+.notes-block{border-radius:9px;overflow:hidden;border:1px solid;}
+.nb-lead{border-color:rgba(52,211,153,0.25);}
+.nb-res{border-color:rgba(251,191,36,0.25);}
+.nb-pilot{border-color:rgba(96,165,250,0.25);}
+.nb-hdr{display:flex;align-items:flex-start;gap:9px;padding:10px 12px;}
+.nb-lead .nb-hdr{background:rgba(52,211,153,0.06);}
+.nb-res .nb-hdr{background:rgba(251,191,36,0.06);}
+.nb-pilot .nb-hdr{background:rgba(96,165,250,0.06);}
+.nb-icon{font-size:1.3rem;flex-shrink:0;}
+.nb-title{font-family:'IBM Plex Mono',monospace;font-size:0.72rem;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px;}
+.nb-lead .nb-title{color:var(--green);}
+.nb-res .nb-title{color:var(--amber);}
+.nb-pilot .nb-title{color:var(--blue);}
+.nb-sub{font-size:0.67rem;color:var(--muted);line-height:1.4;}
+.nb-ts{margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:0.55rem;color:var(--muted);white-space:nowrap;flex-shrink:0;}
+.nb-ta{width:100%;background:var(--panel);border:none;border-top:1px solid rgba(255,255,255,0.05);padding:10px 12px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.8rem;resize:vertical;min-height:100px;line-height:1.6;}
+.nb-ta:focus{outline:none;}
+.nb-ta::placeholder{color:rgba(107,143,122,0.4);font-size:0.74rem;line-height:1.7;}
+
+/* ACTION BAR */
+.action-bar{display:flex;gap:7px;padding:10px 12px;border-top:1px solid var(--border);background:var(--panel);position:fixed;bottom:0;left:0;right:0;z-index:50;flex-wrap:wrap;}
+.action-btn{padding:8px 14px;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:0.62rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border:none;transition:all 0.2s;}
+.btn-save{background:var(--green);color:var(--bg);font-weight:600;}
+.btn-save:hover{opacity:0.85;}
+.btn-reset{background:transparent;color:var(--red);border:1px solid rgba(248,113,113,0.3);}
+.btn-export{background:transparent;color:var(--blue);border:1px solid rgba(96,165,250,0.3);}
+.save-st{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--green);align-self:center;letter-spacing:1px;opacity:0;transition:opacity 0.3s;margin-left:auto;}
+.save-st.show{opacity:1;}
+.sync-st{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--muted);align-self:center;letter-spacing:1px;}
+
+@media(max-width:580px){.cells-grid{grid-template-columns:1fr;}}
+::-webkit-scrollbar{height:3px;width:3px;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="login-logo">🤖 FLOOR TRACKER</div>
+    <div class="login-sub">Stunt & Doubles · Atlas Program<br>Sign in to join the live floor</div>
+    <div class="login-label">Your Name</div>
+    <input class="login-input" id="loginName" placeholder="e.g. Eli, Max, Jesse..." />
+    <div class="login-label">Your Role</div>
+    <select class="login-select" id="loginRole">
+      <option value="Lead">Lead</option>
+      <option value="Co-Lead">Co-Lead</option>
+      <option value="Researcher">Researcher</option>
+      <option value="OC">OC</option>
+    </select>
+    <button class="login-btn" onclick="doLogin()">JOIN FLOOR</button>
+    <div class="login-error" id="loginError">Please enter your name</div>
+  </div>
+</div>
+
+<!-- HEADER -->
+<header>
+  <div class="brand">🤖 LIVE FLOOR</div>
+  <div class="header-mid">
+    <div class="live-dot-wrap"><div class="live-dot"></div>LIVE</div>
+    <div class="who-badge" id="whoBadge">—</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <div class="clock" id="clockDisplay">--:--:--</div>
+    <div class="shift-toggle">
+      <button class="shift-btn active" id="btnAM" onclick="setShift('AM')">AM</button>
+      <button class="shift-btn" id="btnPM" onclick="setShift('PM')">PM</button>
+    </div>
+  </div>
+</header>
+
+<!-- TABS -->
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('floor',this)">🗺 Floor</button>
+  <button class="tab-btn" onclick="switchTab('notifs',this)">🔔 Updates <span class="notif-badge" id="notifBadge">0</span></button>
+  <button class="tab-btn" onclick="switchTab('log',this)">📋 Move Log</button>
+  <button class="tab-btn" onclick="switchTab('notes',this)">📝 Notes</button>
+</div>
+
+<!-- SUMMARY -->
+<div class="summary-bar">
+  <div class="sum-item"><div class="sum-num cg" id="sActive">0</div><div class="sum-label">Active</div></div>
+  <div class="sum-item"><div class="sum-num cr" id="sDown">0</div><div class="sum-label">Down</div></div>
+  <div class="sum-item"><div class="sum-num ca" id="sEval">0</div><div class="sum-label">Eval</div></div>
+  <div class="sum-item"><div class="sum-num cb" id="sPilots">0</div><div class="sum-label">Pilots</div></div>
+  <div class="sum-item"><div class="sum-num cr" id="sBench">0</div><div class="sum-label">Out</div></div>
+  <div class="sum-item"><div class="sum-num ca" id="sRes">0</div><div class="sum-label">Research</div></div>
+  <div class="sum-item"><div class="sum-num cp" id="sMoves">0</div><div class="sum-label">Moves</div></div>
+</div>
+
+<!-- BENCH -->
+<div class="quick-bar">
+  <div class="qb-label">🚫 Called Out</div>
+  <div id="benchChips" style="display:flex;gap:6px;flex-wrap:wrap;flex:1;"></div>
+  <button class="add-chip add-chip-red" onclick="addBench()">+ Add</button>
+</div>
+
+<!-- OC -->
+<div class="oc-bar">
+  <div class="oc-label">👁 OC Pilots</div>
+  <div id="ocChips" style="display:flex;gap:6px;flex-wrap:wrap;flex:1;"></div>
+  <button class="add-chip add-chip-blue" onclick="addOC()">+ Add OC</button>
+</div>
+
+<!-- FLOOR TAB -->
+<div class="tab-content active" id="tab-floor">
+  <div class="labs-wrap">
+    <div class="lab-sec">
+      <div class="lab-hdr">
+        <div style="display:flex;align-items:center;">
+          <div class="lab-name">LAB 1 — TERRAN</div>
+          <div class="lab-sub">Cells A B C D</div>
+        </div>
+        <div class="lab-stat" id="statT">—</div>
+      </div>
+      <div class="cells-grid" id="terranCells"></div>
+    </div>
+    <div class="lab-sec">
+      <div class="lab-hdr">
+        <div style="display:flex;align-items:center;">
+          <div class="lab-name">LAB 2 — TATOOINE</div>
+          <div class="lab-sub">Cells E F G H I J</div>
+        </div>
+        <div class="lab-stat" id="statTT">—</div>
+      </div>
+      <div class="cells-grid" id="tatooineCells"></div>
+    </div>
+  </div>
+</div>
+
+<!-- NOTIFS TAB -->
+<div class="tab-content" id="tab-notifs">
+  <div class="notif-wrap">
+    <div class="notif-controls">
+      <select class="notif-filter" id="nfCell" onchange="renderNotifs()">
+        <option value="">All Cells</option>
+        <option>A</option><option>B</option><option>C</option><option>D</option>
+        <option>E</option><option>F</option><option>G</option><option>H</option><option>I</option><option>J</option>
+      </select>
+      <select class="notif-filter" id="nfType" onchange="renderNotifs()">
+        <option value="">All Types</option>
+        <option value="pilot">Pilot moves</option>
+        <option value="robot">Robot swaps</option>
+        <option value="status">Status changes</option>
+        <option value="downtime">Downtime</option>
+        <option value="bench">Called out</option>
+      </select>
+      <div class="notif-count" id="notifCount">0 updates</div>
+    </div>
+    <div class="notif-list" id="notifList">
+      <div class="notif-empty">NO UPDATES YET — CHANGES WILL APPEAR HERE IN REAL TIME</div>
+    </div>
+  </div>
+</div>
+
+<!-- LOG TAB -->
+<div class="tab-content" id="tab-log">
+  <div class="log-wrap">
+    <div class="log-controls">
+      <select class="log-filter" id="lfCell" onchange="renderLog()">
+        <option value="">All Cells</option>
+        <option>A</option><option>B</option><option>C</option><option>D</option>
+        <option>E</option><option>F</option><option>G</option><option>H</option><option>I</option><option>J</option>
+      </select>
+      <select class="log-filter" id="lfField" onchange="renderLog()">
+        <option value="">All Fields</option>
+        <option value="pilot">Pilot</option><option value="robot">Robot</option>
+        <option value="script">Script</option><option value="status">Status</option>
+      </select>
+      <div class="notif-count" id="logCount">0 moves</div>
+    </div>
+    <div class="log-table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>By</th><th>Cell</th><th>Field</th><th>From</th><th>To</th></tr></thead>
+        <tbody id="logBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- NOTES TAB -->
+<div class="tab-content" id="tab-notes">
+  <div class="notes-wrap">
+    <div class="notes-block nb-lead">
+      <div class="nb-hdr">
+        <div class="nb-icon">🎯</div>
+        <div>
+          <div class="nb-title">Lead Team Notes</div>
+          <div class="nb-sub">Reprioritizations · P0/P1 · Station decisions · Blockers · Handoff</div>
+        </div>
+        <div class="nb-ts" id="ts-lead"></div>
+      </div>
+      <textarea class="nb-ta" id="notesLead" placeholder="— P0/P1 changes and reason&#10;— Station reassignments&#10;— Blockers logged in ORCA/Buganizer&#10;— What incoming lead needs to know" oninput="noteChange('lead')"></textarea>
+    </div>
+    <div class="notes-block nb-res">
+      <div class="nb-hdr">
+        <div class="nb-icon">🔬</div>
+        <div>
+          <div class="nb-title">Researcher Notes</div>
+          <div class="nb-sub">Eval sessions · Arrivals · Requests · Demo feedback</div>
+        </div>
+        <div class="nb-ts" id="ts-res"></div>
+      </div>
+      <textarea class="nb-ta" id="notesRes" placeholder="— Researcher name + arrival time&#10;— Cell evaluated and feedback&#10;— Demo requests from Amit" oninput="noteChange('res')"></textarea>
+    </div>
+    <div class="notes-block nb-pilot">
+      <div class="nb-hdr">
+        <div class="nb-icon">🧑‍✈️</div>
+        <div>
+          <div class="nb-title">Pilot Notes</div>
+          <div class="nb-sub">Performance · Coaching flags · Issues reported</div>
+        </div>
+        <div class="nb-ts" id="ts-pilot"></div>
+      </div>
+      <textarea class="nb-ta" id="notesPilot" placeholder="— Who performed well today&#10;— Who needs coaching (composure, pace)&#10;— Script confusion or questions from pilots" oninput="noteChange('pilot')"></textarea>
+    </div>
+  </div>
+</div>
+
+<!-- ACTION BAR -->
+<div class="action-bar">
+  <button class="action-btn btn-save" onclick="forceSave()">💾 Save</button>
+  <button class="action-btn btn-export" onclick="exportShift()">📋 Export</button>
+  <button class="action-btn btn-reset" onclick="resetShift()">🔄 New Shift</button>
+  <span class="sync-st" id="syncSt">—</span>
+  <span class="save-st" id="saveSt">SAVED ✓</span>
+</div>
+
+<script>
+// ── CONFIG ──
+const TERRAN = ['A','B','C','D'];
+const TATOOINE = ['E','F','G','H','I','J'];
+const ALL = [...TERRAN,...TATOOINE];
+const SHARED_KEY = 'sd-floor-live-v1';       // shared across all users
+const NOTIF_KEY  = 'sd-floor-notifs-v1';     // shared notification feed
+const LOCAL_KEY  = 'sd-floor-local-v1';      // per-user local prefs
+
+let me = { name:'', role:'Lead' };
+let state = {
+  shift:'AM', cells:{}, bench:[], oc:[],
+  notesLead:'', notesRes:'', notesPilot:'',
+  notesLeadTS:'', notesResTS:'', notesPilotTS:'',
+  downtimes:{}, moveLog:[]
+};
+let notifFeed = [];
+let dtTimers = {};
+let syncInterval = null;
+let lastSyncHash = '';
+
+// init cell defaults
+function initCells() {
+  ALL.forEach(id => {
+    if (!state.cells[id]) state.cells[id] = {status:'active',pilot:'',robot:'',script:'',researcher:'',resArrival:'',noteLead:'',noteRes:'',notePilot:''};
+    if (!state.downtimes[id]) state.downtimes[id] = {running:false,start:null,totalMin:0};
+  });
+}
+initCells();
+
+// ── LOGIN ──
+function doLogin() {
+  const n = document.getElementById('loginName').value.trim();
+  if (!n) { document.getElementById('loginError').style.display='block'; return; }
+  me.name = n;
+  me.role = document.getElementById('loginRole').value;
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('whoBadge').textContent = `${me.name} · ${me.role}`;
+  startSync();
+}
+
+// ── SHARED STORAGE SYNC ──
+async function loadShared() {
+  try {
+    const r = await window.storage.get(SHARED_KEY, true);
+    if (r && r.value) {
+      const s = JSON.parse(r.value);
+      // merge carefully — don't overwrite local downtime timers
+      state.shift = s.shift || state.shift;
+      state.bench = s.bench || [];
+      state.oc = s.oc || [];
+      state.notesLead = s.notesLead || '';
+      state.notesRes = s.notesRes || '';
+      state.notesPilot = s.notesPilot || '';
+      state.notesLeadTS = s.notesLeadTS || '';
+      state.notesResTS = s.notesResTS || '';
+      state.notesPilotTS = s.notesPilotTS || '';
+      state.moveLog = s.moveLog || [];
+      // merge cells
+      ALL.forEach(id => {
+        if (s.cells && s.cells[id]) {
+          const sc = s.cells[id];
+          const ldt = state.downtimes[id];
+          state.cells[id] = { ...sc };
+          if (!state.cells[id].noteLead) state.cells[id].noteLead = '';
+          if (!state.cells[id].noteRes) state.cells[id].noteRes = '';
+          if (!state.cells[id].notePilot) state.cells[id].notePilot = '';
+          if (s.downtimes && s.downtimes[id] && !ldt.running) {
+            state.downtimes[id] = s.downtimes[id];
+          }
+        }
+      });
+    }
+  } catch(e) {}
+
+  try {
+    const rn = await window.storage.get(NOTIF_KEY, true);
+    if (rn && rn.value) notifFeed = JSON.parse(rn.value);
+  } catch(e) {}
+}
+
+async function saveShared() {
+  const payload = JSON.stringify({ ...state });
+  const hash = payload.slice(0,200);
+  try {
+    await window.storage.set(SHARED_KEY, payload, true);
+    await window.storage.set(NOTIF_KEY, JSON.stringify(notifFeed.slice(-100)), true);
+    lastSyncHash = hash;
+    setSyncStatus('SYNCED ' + new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}));
+  } catch(e) { setSyncStatus('SYNC ERROR'); }
+}
+
+function setSyncStatus(msg) {
+  document.getElementById('syncSt').textContent = msg;
+}
+
+function startSync() {
+  loadShared().then(() => { renderAll(); });
+  syncInterval = setInterval(async () => {
+    await loadShared();
+    renderAll();
+    setSyncStatus('SYNCED ' + new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}));
+  }, 8000); // poll every 8 seconds
+}
+
+// ── NOTIFICATIONS ──
+const NOTIF_ICONS = { pilot:'🧑‍✈️', robot:'🤖', script:'📜', status:'🔄', downtime:'⏱', researcher:'🔬', bench:'🚫', oc:'👁' };
+function pushNotif(type, cellId, field, from, to) {
+  const now = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  notifFeed.unshift({ type, cell:cellId, field, from:from||'—', to:to||'—', by:me.name, role:me.role, time:now });
+  if (notifFeed.length > 150) notifFeed = notifFeed.slice(0,150);
+  renderNotifs();
+}
+
+function renderNotifs() {
+  const fc = document.getElementById('nfCell').value;
+  const ft = document.getElementById('nfType').value;
+  let feed = notifFeed;
+  if (fc) feed = feed.filter(n => n.cell === fc);
+  if (ft) feed = feed.filter(n => n.type === ft);
+
+  document.getElementById('notifCount').textContent = `${notifFeed.length} updates`;
+  document.getElementById('notifBadge').textContent = notifFeed.length;
+
+  const list = document.getElementById('notifList');
+  if (feed.length === 0) { list.innerHTML = '<div class="notif-empty">NO UPDATES YET</div>'; return; }
+
+  list.innerHTML = feed.map(n => {
+    const icon = NOTIF_ICONS[n.type] || '📌';
+    let msg = '';
+    if (n.type === 'bench') msg = `<span class="hl-cell">${n.by}</span> added <span class="hl-from">${n.to}</span> to Called Out`;
+    else if (n.type === 'oc') msg = `<span class="hl-cell">${n.by}</span> added OC pilot <span class="hl-to">${n.to}</span>`;
+    else msg = `Cell <span class="hl-cell">${n.cell}</span> — ${n.field.toUpperCase()} changed from <span class="hl-from">${n.from}</span> → <span class="hl-to">${n.to}</span>`;
+    return `
+    <div class="notif-item n-${n.type}">
+      <div class="notif-icon">${icon}</div>
+      <div class="notif-body">
+        <div class="notif-who">${n.by} · ${n.role}</div>
+        <div class="notif-msg">${msg}</div>
+      </div>
+      <div class="notif-time">${n.time}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── MOVE LOG ──
+function renderLog() {
+  const fc = document.getElementById('lfCell').value;
+  const ff = document.getElementById('lfField').value;
+  let log = [...state.moveLog].reverse();
+  if (fc) log = log.filter(e => e.cell === fc);
+  if (ff) log = log.filter(e => e.field === ff);
+  document.getElementById('logCount').textContent = `${state.moveLog.length} moves`;
+  const body = document.getElementById('logBody');
+  if (log.length === 0) { body.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:28px;font-family:IBM Plex Mono,monospace;font-size:0.68rem;color:var(--muted)">NO MOVES LOGGED YET</td></tr>`; return; }
+  body.innerHTML = log.map(e => `
+    <tr>
+      <td class="lt">${e.time}</td>
+      <td class="lw">${e.by||'—'}</td>
+      <td class="lc">CELL ${e.cell}</td>
+      <td class="lf">${(e.field||'').toUpperCase()}</td>
+      <td><span class="lfrom">${e.from||'—'}</span></td>
+      <td><span class="lto">${e.to||'—'}</span></td>
+    </tr>`).join('');
+}
+
+// ── CELL RENDER ──
+function renderCell(id) {
+  const c = state.cells[id];
+  const dt = state.downtimes[id];
+  const lab = TERRAN.includes(id) ? 'T':'TT';
+  const dtLbl = dt.totalMin > 0 ? `${dt.totalMin}m`:'—';
+  // who last edited this cell
+  const lastEdit = [...state.moveLog].reverse().find(e => e.cell === id);
+  const editorTag = lastEdit ? `<div class="cell-editor">${lastEdit.by}</div>` : '';
+  return `
+  <div class="cell-card st-${c.status}" id="card-${id}">
+    <div class="cell-hdr">
+      <div class="cell-id-wrap">
+        <div class="cell-id">CELL ${id} <span style="font-size:0.52rem;color:var(--muted)">${lab}</span></div>
+        ${editorTag}
+      </div>
+      <button class="badge b-${c.status}" id="badge-${id}" onclick="cycleStatus('${id}')">${c.status.toUpperCase()}</button>
+    </div>
+    <div class="cell-body">
+      <div class="cell-row"><div class="ri">🧑‍✈️</div><div class="rl">Pilot</div>
+        <input class="ci" id="pilot-${id}" value="${c.pilot}" placeholder="Pilot name" data-prev="${c.pilot}" onblur="handleChange('${id}','pilot',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">🤖</div><div class="rl">Robot</div>
+        <input class="ci" id="robot-${id}" value="${c.robot}" placeholder="Unit # / ID" data-prev="${c.robot}" onblur="handleChange('${id}','robot',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">📜</div><div class="rl">Script</div>
+        <input class="ci" id="script-${id}" value="${c.script}" placeholder="Script name" data-prev="${c.script}" onblur="handleChange('${id}','script',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">🔬</div><div class="rl">Researcher</div>
+        <input class="ci" id="researcher-${id}" value="${c.researcher}" placeholder="Name or none" data-prev="${c.researcher}" onblur="handleChange('${id}','researcher',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">🕐</div><div class="rl">Arrival</div>
+        <input class="ci" id="resArrival-${id}" type="time" value="${c.resArrival}" data-prev="${c.resArrival}" onblur="handleChange('${id}','resArrival',this)" oninput="autoSave()" style="max-width:108px;">
+      </div>
+      <div class="cell-notes">
+        <div class="cn-block cn-lead">
+          <div class="cn-lbl">🎯 Lead Note</div>
+          <textarea class="cn-ta" id="cnl-${id}" placeholder="Station decisions, blockers..." oninput="cellNote('${id}','noteLead',this)">${c.noteLead||''}</textarea>
+        </div>
+        <div class="cn-block cn-res">
+          <div class="cn-lbl">🔬 Researcher Note</div>
+          <textarea class="cn-ta" id="cnr-${id}" placeholder="Eval requests, feedback..." oninput="cellNote('${id}','noteRes',this)">${c.noteRes||''}</textarea>
+        </div>
+        <div class="cn-block cn-pilot">
+          <div class="cn-lbl">🧑‍✈️ Pilot Note</div>
+          <textarea class="cn-ta" id="cnp-${id}" placeholder="Performance, coaching flag..." oninput="cellNote('${id}','notePilot',this)">${c.notePilot||''}</textarea>
+        </div>
+      </div>
+      <div class="dt-row">
+        <div class="dt-lbl">⏱ Down</div>
+        <button class="dt-btn ${dt.running?'dt-stop':'dt-start'}" id="dtbtn-${id}" onclick="toggleDT('${id}')">${dt.running?'STOP':'START'}</button>
+        <div class="dt-disp" id="dtd-${id}">${dt.running?'RUNNING...':dtLbl}</div>
+        <div class="dt-tot" id="dtt-${id}">${dt.totalMin>0?dt.totalMin+'m total':''}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── CHANGE HANDLER ──
+function handleChange(cellId, field, input) {
+  const prev = input.getAttribute('data-prev') || '';
+  const next = input.value.trim();
+  if (prev === next) return;
+  state.cells[cellId][field] = next;
+  const now = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  state.moveLog.push({ time:now, cell:cellId, field, from:prev, to:next, by:me.name });
+  pushNotif(field, cellId, field, prev, next);
+  input.setAttribute('data-prev', next);
+  const lastEdit = document.querySelector(`#card-${cellId} .cell-editor`);
+  if (lastEdit) lastEdit.textContent = me.name;
+  saveShared();
+}
+
+function cellNote(cellId, field, ta) {
+  state.cells[cellId][field] = ta.value;
+  autoSave();
+}
+
+// ── STATUS ──
+function cycleStatus(id) {
+  const order = ['active','idle','eval','down'];
+  const prev = state.cells[id].status;
+  const next = order[(order.indexOf(prev)+1)%order.length];
+  state.cells[id].status = next;
+  document.getElementById(`card-${id}`).className = `cell-card st-${next}`;
+  const b = document.getElementById(`badge-${id}`);
+  b.className = `badge b-${next}`; b.textContent = next.toUpperCase();
+  pushNotif('status', id, 'status', prev, next);
+  const now = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  state.moveLog.push({time:now,cell:id,field:'status',from:prev,to:next,by:me.name});
+  saveShared();
+}
+
+// ── DOWNTIME ──
+function toggleDT(id) {
+  const dt = state.downtimes[id];
+  if (!dt.running) {
+    dt.running=true; dt.start=Date.now();
+    dtTimers[id]=setInterval(()=>updateDTDisp(id),1000);
+    document.getElementById(`dtbtn-${id}`).className='dt-btn dt-stop';
+    document.getElementById(`dtbtn-${id}`).textContent='STOP';
+    pushNotif('downtime',id,'downtime','UP','DOWN ⏱');
+  } else {
+    dt.running=false; clearInterval(dtTimers[id]);
+    const mins=Math.max(1,Math.floor((Date.now()-dt.start)/60000));
+    dt.totalMin+=mins; dt.start=null;
+    document.getElementById(`dtbtn-${id}`).className='dt-btn dt-start';
+    document.getElementById(`dtbtn-${id}`).textContent='START';
+    document.getElementById(`dtd-${id}`).textContent=`${dt.totalMin}m`;
+    document.getElementById(`dtt-${id}`).textContent=`${dt.totalMin}m total`;
+    pushNotif('downtime',id,'downtime','DOWN ⏱',`UP — ${mins}m`);
+    saveShared();
+  }
+}
+function updateDTDisp(id) {
+  const dt=state.downtimes[id];
+  if(!dt.running||!dt.start)return;
+  const s=Math.floor((Date.now()-dt.start)/1000);
+  const m=Math.floor(s/60).toString().padStart(2,'0');
+  const sc=(s%60).toString().padStart(2,'0');
+  const el=document.getElementById(`dtd-${id}`);
+  if(el)el.textContent=`${m}:${sc}`;
+}
+
+// ── BENCH / OC ──
+function renderBench() {
+  document.getElementById('benchChips').innerHTML = state.bench.map((n,i)=>
+    `<div class="chip chip-red">🚫 ${n}<button onclick="removeBench(${i})">×</button></div>`).join('');
+}
+function addBench(){const n=prompt('Pilot name (called out):');if(n&&n.trim()){state.bench.push(n.trim());pushNotif('bench','-','bench','',n.trim());renderBench();saveShared();}}
+function removeBench(i){state.bench.splice(i,1);renderBench();saveShared();}
+
+function renderOC() {
+  const el=document.getElementById('ocChips');
+  el.innerHTML=state.oc.length===0
+    ?'<span style="font-size:0.7rem;color:var(--muted);">None assigned</span>'
+    :state.oc.map((o,i)=>`<div class="chip chip-blue">👁 ${o.name}${o.role?' — '+o.role:''}<button onclick="removeOC(${i})">×</button></div>`).join('');
+}
+function addOC(){const n=prompt('OC pilot name:');if(!n||!n.trim())return;const r=prompt('What are they doing?')||'';state.oc.push({name:n.trim(),role:r.trim()});pushNotif('oc','-','oc','',n.trim());renderOC();saveShared();}
+function removeOC(i){state.oc.splice(i,1);renderOC();saveShared();}
+
+// ── NOTES ──
+function noteChange(type) {
+  const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+  const ts=`${me.name} · ${now}`;
+  if(type==='lead'){state.notesLead=document.getElementById('notesLead').value;state.notesLeadTS=ts;document.getElementById('ts-lead').textContent=ts;}
+  if(type==='res'){state.notesRes=document.getElementById('notesRes').value;state.notesResTS=ts;document.getElementById('ts-res').textContent=ts;}
+  if(type==='pilot'){state.notesPilot=document.getElementById('notesPilot').value;state.notesPilotTS=ts;document.getElementById('ts-pilot').textContent=ts;}
+  autoSave();
+}
+
+// ── SUMMARY ──
+function updateSummary() {
+  const cells=Object.values(state.cells);
+  document.getElementById('sActive').textContent=cells.filter(c=>c.status==='active').length;
+  document.getElementById('sDown').textContent=cells.filter(c=>c.status==='down').length;
+  document.getElementById('sEval').textContent=cells.filter(c=>c.status==='eval').length;
+  document.getElementById('sPilots').textContent=cells.filter(c=>c.pilot.trim()).length;
+  document.getElementById('sBench').textContent=state.bench.length;
+  document.getElementById('sRes').textContent=cells.filter(c=>c.researcher.trim()&&!['none','n/a','—'].includes(c.researcher.toLowerCase())).length;
+  document.getElementById('sMoves').textContent=state.moveLog.length;
+  const ta=TERRAN.filter(id=>state.cells[id].status==='active').length;
+  const tta=TATOOINE.filter(id=>state.cells[id].status==='active').length;
+  document.getElementById('statT').textContent=`${ta}/${TERRAN.length} ACTIVE`;
+  document.getElementById('statTT').textContent=`${tta}/${TATOOINE.length} ACTIVE`;
+}
+
+// ── RENDER ALL ──
+function renderAll() {
+  document.getElementById('terranCells').innerHTML=TERRAN.map(renderCell).join('');
+  document.getElementById('tatooineCells').innerHTML=TATOOINE.map(renderCell).join('');
+  document.getElementById('notesLead').value=state.notesLead||'';
+  document.getElementById('notesRes').value=state.notesRes||'';
+  document.getElementById('notesPilot').value=state.notesPilot||'';
+  if(state.notesLeadTS)document.getElementById('ts-lead').textContent=state.notesLeadTS;
+  if(state.notesResTS)document.getElementById('ts-res').textContent=state.notesResTS;
+  if(state.notesPilotTS)document.getElementById('ts-pilot').textContent=state.notesPilotTS;
+  document.getElementById(`btn${state.shift}`).classList.add('active');
+  renderBench(); renderOC(); renderNotifs(); renderLog(); updateSummary();
+  ALL.forEach(id=>{ if(state.downtimes[id]?.running&&!dtTimers[id]){ dtTimers[id]=setInterval(()=>updateDTDisp(id),1000); }});
+}
+
+// ── TABS ──
+function switchTab(name,btn) {
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById(`tab-${name}`).classList.add('active');
+  if(btn)btn.classList.add('active');
+}
+
+// ── SHIFT ──
+function setShift(s){
+  state.shift=s;
+  document.getElementById('btnAM').classList.toggle('active',s==='AM');
+  document.getElementById('btnPM').classList.toggle('active',s==='PM');
+  saveShared();
+}
+
+// ── CLOCK ──
+setInterval(()=>{
+  const n=new Date();
+  document.getElementById('clockDisplay').textContent=n.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+},1000);
+
+// ── AUTO SAVE ──
+let asT;
+function autoSave(){clearTimeout(asT);asT=setTimeout(saveShared,1800);}
+function forceSave(){
+  ALL.forEach(id=>{
+    ['noteLead','noteRes','notePilot'].forEach(f=>{
+      const el=document.getElementById({noteLead:`cnl-${id}`,noteRes:`cnr-${id}`,notePilot:`cnp-${id}`}[f]);
+      if(el)state.cells[id][f]=el.value;
+    });
+  });
+  saveShared();
+  const s=document.getElementById('saveSt');s.classList.add('show');setTimeout(()=>s.classList.remove('show'),2000);
+}
+
+// ── EXPORT ──
+function exportShift(){
+  const now=new Date().toLocaleString();
+  let out=`LIVE FLOOR TRACKER EXPORT\nDate/Time: ${now}\nShift: ${state.shift}\nExported by: ${me.name} (${me.role})\n${'='.repeat(55)}\n\n`;
+  ['LAB 1 — TERRAN','LAB 2 — TATOOINE'].forEach((lab,li)=>{
+    out+=`${lab}\n${'-'.repeat(35)}\n`;
+    (li===0?TERRAN:TATOOINE).forEach(id=>{
+      const c=state.cells[id];const dt=state.downtimes[id];
+      out+=`Cell ${id} [${c.status.toUpperCase()}]\n`;
+      out+=`  Pilot:       ${c.pilot||'—'}\n`;
+      out+=`  Robot:       ${c.robot||'—'}\n`;
+      out+=`  Script:      ${c.script||'—'}\n`;
+      out+=`  Researcher:  ${c.researcher||'—'}\n`;
+      out+=`  Arrival:     ${c.resArrival||'—'}\n`;
+      out+=`  Downtime:    ${dt.totalMin>0?dt.totalMin+' min':'0 min'}\n`;
+      if(c.noteLead)  out+=`  Lead Note:   ${c.noteLead}\n`;
+      if(c.noteRes)   out+=`  Res Note:    ${c.noteRes}\n`;
+      if(c.notePilot) out+=`  Pilot Note:  ${c.notePilot}\n`;
+      out+='\n';
+    });
+  });
+  if(state.bench.length>0){out+=`CALLED OUT\n${'-'.repeat(35)}\n`;state.bench.forEach(n=>out+=`  🚫 ${n}\n`);out+='\n';}
+  if(state.oc.length>0){out+=`OC PILOTS\n${'-'.repeat(35)}\n`;state.oc.forEach(o=>out+=`  👁 ${o.name}${o.role?' — '+o.role:''}\n`);out+='\n';}
+  if(state.moveLog.length>0){
+    out+=`MOVEMENT LOG (${state.moveLog.length} total)\n${'-'.repeat(35)}\n`;
+    state.moveLog.forEach(e=>out+=`  [${e.time}] ${(e.by||'?').padEnd(12)} Cell ${e.cell} | ${(e.field||'').toUpperCase().padEnd(12)} | ${(e.from||'—').padEnd(20)} → ${e.to||'—'}\n`);
+    out+='\n';
+  }
+  if(state.notesLead){out+=`LEAD NOTES\n${'-'.repeat(35)}\n${state.notesLead}\n\n`;}
+  if(state.notesRes){out+=`RESEARCHER NOTES\n${'-'.repeat(35)}\n${state.notesRes}\n\n`;}
+  if(state.notesPilot){out+=`PILOT NOTES\n${'-'.repeat(35)}\n${state.notesPilot}\n\n`;}
+  const blob=new Blob([out],{type:'text/plain'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`floor-log-${new Date().toISOString().slice(0,10)}-${state.shift}-${me.name}.txt`;
+  a.click();
+}
+
+// ── RESET ──
+function resetShift(){
+  if(!confirm('Clear all floor data for new shift? Notes kept.'))return;
+  ALL.forEach(id=>{state.cells[id]={status:'active',pilot:'',robot:'',script:'',researcher:'',resArrival:'',noteLead:'',noteRes:'',notePilot:''};state.downtimes[id]={running:false,start:null,totalMin:0};});
+  state.bench=[];state.oc=[];state.moveLog=[];notifFeed=[];
+  renderAll();saveShared();
+}
+</script>
+</body>
+</html>
