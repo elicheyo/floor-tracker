@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Floor — Stunt & Doubles</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getDatabase, ref, onValue, set, get } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+// ── FIREBASE CONFIG ──
+const firebaseConfig = {
+  databaseURL: "https://floor-tracker-28495-default-rtdb.firebaseio.com"
+};
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+const TERRAN = ['A','B','C','D'];
+const TATOOINE = ['E','F','G','H','I','J'];
+const ALL = [...TERRAN,...TATOOINE];
+
+let me = { name:'', role:'Lead' };
+let state = {
+  shift:'AM', cells:{}, bench:[], oc:[],
+  notesLead:'', notesRes:'', notesPilot:'',
+  notesLeadTS:'', notesResTS:'', notesPilotTS:'',
+  moveLog:[]
+};
+let dtTimers = {};
+let dtLocal = {};
+ALL.forEach(id => {
+  state.cells[id] = {status:'active',pilot:'',robot:'',script:'',researcher:'',resArrival:'',noteLead:'',noteRes:'',notePilot:''};
+  dtLocal[id] = {running:false,start:null,totalMin:0};
+});
+
+// ── LOGIN ──
+function showFloor() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('whoBadge').textContent = me.name + ' · ' + me.role;
+  startFirebase();
+}
+
+window.doLogin = function() {
+  const n = document.getElementById('loginName').value.trim();
+  if (!n) { document.getElementById('loginError').style.display='block'; return; }
+  me.name = n;
+  me.role = document.getElementById('loginRole').value;
+  localStorage.setItem('sd-floor-me', JSON.stringify(me));
+  sessionStorage.setItem('sd-floor-me', JSON.stringify(me));
+  showFloor();
+}
+
+// check if already logged in — runs after DOM ready
+function checkLogin() {
+  try {
+    const saved = sessionStorage.getItem('sd-floor-me') || localStorage.getItem('sd-floor-me');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && parsed.name) {
+        me = parsed;
+        localStorage.setItem('sd-floor-me', JSON.stringify(me));
+        sessionStorage.setItem('sd-floor-me', JSON.stringify(me));
+        showFloor();
+        return;
+      }
+    }
+  } catch(e) {}
+  // no saved login — show login screen
+  document.getElementById('loginScreen').style.display = 'flex';
+}
+setTimeout(checkLogin, 100);
+
+// ── FIREBASE SYNC ──
+function startFirebase() {
+  const floorRef = ref(db, 'floor');
+  setSyncStatus('Connecting to Firebase...');
+  // onValue fires immediately with current data AND every time data changes
+  onValue(floorRef, (snapshot) => {
+    const data = snapshot.val();
+    if (data) {
+      state.shift = data.shift || state.shift;
+      state.bench = data.bench || [];
+      state.oc = data.oc || [];
+      state.notesLead = data.notesLead || '';
+      state.notesRes = data.notesRes || '';
+      state.notesPilot = data.notesPilot || '';
+      state.notesLeadTS = data.notesLeadTS || '';
+      state.notesResTS = data.notesResTS || '';
+      state.notesPilotTS = data.notesPilotTS || '';
+      state.moveLog = data.moveLog || [];
+      if (data.cells) {
+        ALL.forEach(id => {
+          if (data.cells[id]) {
+            state.cells[id] = { ...state.cells[id], ...data.cells[id] };
+          }
+        });
+      }
+    }
+    renderAll();
+    setSyncStatus('LIVE ✓ ' + new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}));
+  }, (error) => {
+    setSyncStatus('CONNECTION ERROR: ' + error.message);
+    console.error('Firebase error:', error);
+  });
+}
+
+async function pushToFirebase() {
+  try {
+    await set(ref(db, 'floor'), {
+      shift: state.shift,
+      cells: state.cells,
+      bench: state.bench,
+      oc: state.oc,
+      notesLead: state.notesLead,
+      notesRes: state.notesRes,
+      notesPilot: state.notesPilot,
+      notesLeadTS: state.notesLeadTS,
+      notesResTS: state.notesResTS,
+      notesPilotTS: state.notesPilotTS,
+      moveLog: state.moveLog.slice(-200)
+    });
+  } catch(e) { setSyncStatus('SYNC ERROR — check connection'); }
+}
+
+function setSyncStatus(msg) {
+  const el = document.getElementById('syncSt');
+  if (el) el.textContent = msg;
+}
+
+// ── CHANGE HANDLER ──
+window.handleChange = function(cellId, field, input) {
+  const prev = input.getAttribute('data-prev') || '';
+  const next = input.value.trim();
+  if (prev === next) return;
+  state.cells[cellId][field] = next;
+  const now = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  state.moveLog.push({time:now,cell:cellId,field,from:prev,to:next,by:me.name});
+  input.setAttribute('data-prev', next);
+  // update editor tag immediately
+  const et = document.getElementById(`editor-${cellId}`);
+  if (et) et.textContent = me.name;
+  pushToFirebase();
+  renderLog();
+  updateSummary();
+}
+
+window.cellNote = function(cellId, field, ta) {
+  state.cells[cellId][field] = ta.value;
+  autoSave();
+}
+
+// ── STATUS ──
+window.cycleStatus = function(id) {
+  const order = ['active','idle','eval','down'];
+  const prev = state.cells[id].status;
+  const next = order[(order.indexOf(prev)+1)%order.length];
+  state.cells[id].status = next;
+  document.getElementById(`card-${id}`).className = `cell-card st-${next}`;
+  const b = document.getElementById(`badge-${id}`);
+  b.className=`badge b-${next}`; b.textContent=next.toUpperCase();
+  const now = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  state.moveLog.push({time:now,cell:id,field:'status',from:prev,to:next,by:me.name});
+  pushToFirebase();
+  updateSummary();
+}
+
+// ── DOWNTIME ──
+window.toggleDT = function(id) {
+  const dt = dtLocal[id];
+  if (!dt.running) {
+    dt.running=true; dt.start=Date.now();
+    dtTimers[id]=setInterval(()=>updateDTDisp(id),1000);
+    document.getElementById(`dtbtn-${id}`).className='dt-btn dt-stop';
+    document.getElementById(`dtbtn-${id}`).textContent='STOP';
+    const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    state.moveLog.push({time:now,cell:id,field:'downtime',from:'UP',to:'DOWN ⏱',by:me.name});
+    pushToFirebase();
+  } else {
+    dt.running=false; clearInterval(dtTimers[id]);
+    const mins=Math.max(1,Math.floor((Date.now()-dt.start)/60000));
+    dt.totalMin+=mins; dt.start=null;
+    document.getElementById(`dtbtn-${id}`).className='dt-btn dt-start';
+    document.getElementById(`dtbtn-${id}`).textContent='START';
+    document.getElementById(`dtd-${id}`).textContent=`${dt.totalMin}m`;
+    document.getElementById(`dtt-${id}`).textContent=`${dt.totalMin}m total`;
+    const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    state.moveLog.push({time:now,cell:id,field:'downtime',from:'DOWN ⏱',to:`UP — ${mins}m`,by:me.name});
+    pushToFirebase();
+  }
+}
+function updateDTDisp(id) {
+  const dt=dtLocal[id];
+  if(!dt.running||!dt.start)return;
+  const s=Math.floor((Date.now()-dt.start)/1000);
+  const m=Math.floor(s/60).toString().padStart(2,'0');
+  const sc=(s%60).toString().padStart(2,'0');
+  const el=document.getElementById(`dtd-${id}`);
+  if(el)el.textContent=`${m}:${sc}`;
+}
+
+// ── BENCH / OC ──
+window.addBench = function() {
+  const n=prompt('Pilot name (called out):');
+  if(n&&n.trim()){state.bench.push(n.trim());renderBench();pushToFirebase();}
+}
+window.removeBench = function(i) { state.bench.splice(i,1);renderBench();pushToFirebase(); }
+function renderBench() {
+  document.getElementById('benchChips').innerHTML = state.bench.map((n,i)=>
+    `<div class="chip chip-red">🚫 ${n}<button onclick="removeBench(${i})">×</button></div>`).join('');
+  document.getElementById('sBench').textContent = state.bench.length;
+}
+
+window.addOC = function() {
+  const n=prompt('OC pilot name:');if(!n||!n.trim())return;
+  const r=prompt('What are they doing?')||'';
+  state.oc.push({name:n.trim(),role:r.trim()});renderOC();pushToFirebase();
+}
+window.removeOC = function(i){state.oc.splice(i,1);renderOC();pushToFirebase();}
+function renderOC() {
+  const el=document.getElementById('ocChips');
+  el.innerHTML=state.oc.length===0
+    ?'<span style="font-size:0.7rem;color:var(--muted);">None</span>'
+    :state.oc.map((o,i)=>`<div class="chip chip-blue">👁 ${o.name}${o.role?' — '+o.role:''}<button onclick="removeOC(${i})">×</button></div>`).join('');
+}
+
+// ── NOTES ──
+window.noteChange = function(type) {
+  const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+  const ts=`${me.name} · ${now}`;
+  if(type==='lead'){state.notesLead=document.getElementById('notesLead').value;state.notesLeadTS=ts;document.getElementById('ts-lead').textContent=ts;}
+  if(type==='res'){state.notesRes=document.getElementById('notesRes').value;state.notesResTS=ts;document.getElementById('ts-res').textContent=ts;}
+  if(type==='pilot'){state.notesPilot=document.getElementById('notesPilot').value;state.notesPilotTS=ts;document.getElementById('ts-pilot').textContent=ts;}
+  autoSave();
+}
+
+// ── CELL RENDER ──
+function renderCell(id) {
+  const c = state.cells[id];
+  const dt = dtLocal[id];
+  const lab = TERRAN.includes(id)?'T':'TT';
+  const lastEdit = [...state.moveLog].reverse().find(e=>e.cell===id);
+  const editorTag = lastEdit?`<div class="cell-editor" id="editor-${id}">${lastEdit.by}</div>`:`<div class="cell-editor" id="editor-${id}" style="display:none"></div>`;
+  const dtLbl = dt.totalMin>0?`${dt.totalMin}m`:'—';
+  return `
+  <div class="cell-card st-${c.status}" id="card-${id}">
+    <div class="cell-hdr">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <div class="cell-id">CELL ${id} <span style="font-size:0.52rem;color:var(--muted)">${lab}</span></div>
+        ${editorTag}
+      </div>
+      <button class="badge b-${c.status}" id="badge-${id}" onclick="cycleStatus('${id}')">${c.status.toUpperCase()}</button>
+    </div>
+    <div class="cell-body">
+      <div class="cell-row"><div class="ri">🧑‍✈️</div><div class="rl">Pilot</div>
+        <input class="ci" id="pilot-${id}" value="${c.pilot}" placeholder="Pilot name" data-prev="${c.pilot}" onblur="handleChange('${id}','pilot',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">🤖</div><div class="rl">Robot</div>
+        <input class="ci" id="robot-${id}" value="${c.robot}" placeholder="Unit # / ID" data-prev="${c.robot}" onblur="handleChange('${id}','robot',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">📜</div><div class="rl">Script</div>
+        <input class="ci" id="script-${id}" value="${c.script}" placeholder="Script name" data-prev="${c.script}" onblur="handleChange('${id}','script',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">🔬</div><div class="rl">Researcher</div>
+        <input class="ci" id="researcher-${id}" value="${c.researcher}" placeholder="Name or none" data-prev="${c.researcher}" onblur="handleChange('${id}','researcher',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">🕐</div><div class="rl">Arrival</div>
+        <input class="ci" id="resArrival-${id}" type="time" value="${c.resArrival}" data-prev="${c.resArrival}" onblur="handleChange('${id}','resArrival',this)" oninput="autoSave()" style="max-width:108px;">
+      </div>
+      <div class="cell-notes">
+        <div class="cn-block cn-lead"><div class="cn-lbl">🎯 Lead Note</div>
+          <textarea class="cn-ta" placeholder="Station decisions, blockers..." oninput="cellNote('${id}','noteLead',this)">${c.noteLead||''}</textarea>
+        </div>
+        <div class="cn-block cn-res"><div class="cn-lbl">🔬 Researcher Note</div>
+          <textarea class="cn-ta" placeholder="Eval requests, feedback..." oninput="cellNote('${id}','noteRes',this)">${c.noteRes||''}</textarea>
+        </div>
+        <div class="cn-block cn-pilot"><div class="cn-lbl">🧑‍✈️ Pilot Note</div>
+          <textarea class="cn-ta" placeholder="Performance, coaching flag..." oninput="cellNote('${id}','notePilot',this)">${c.notePilot||''}</textarea>
+        </div>
+      </div>
+      <div class="dt-row">
+        <div class="dt-lbl">⏱ Down</div>
+        <button class="dt-btn ${dt.running?'dt-stop':'dt-start'}" id="dtbtn-${id}" onclick="toggleDT('${id}')">${dt.running?'STOP':'START'}</button>
+        <div class="dt-disp" id="dtd-${id}">${dt.running?'RUNNING...':dtLbl}</div>
+        <div class="dt-tot" id="dtt-${id}">${dt.totalMin>0?dt.totalMin+'m total':''}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── RENDER ALL ──
+function renderAll() {
+  document.getElementById('terranCells').innerHTML=TERRAN.map(renderCell).join('');
+  document.getElementById('tatooineCells').innerHTML=TATOOINE.map(renderCell).join('');
+  // notes
+  const nl=document.getElementById('notesLead');if(nl&&document.activeElement!==nl)nl.value=state.notesLead||'';
+  const nr=document.getElementById('notesRes');if(nr&&document.activeElement!==nr)nr.value=state.notesRes||'';
+  const np=document.getElementById('notesPilot');if(np&&document.activeElement!==np)np.value=state.notesPilot||'';
+  if(state.notesLeadTS)document.getElementById('ts-lead').textContent=state.notesLeadTS;
+  if(state.notesResTS)document.getElementById('ts-res').textContent=state.notesResTS;
+  if(state.notesPilotTS)document.getElementById('ts-pilot').textContent=state.notesPilotTS;
+  document.getElementById(`btn${state.shift}`).classList.add('active');
+  renderBench();renderOC();renderLog();updateSummary();
+}
+
+// ── LOG ──
+function renderLog() {
+  document.getElementById('sMoves').textContent=state.moveLog.length;
+  const body=document.getElementById('logBody');
+  const log=[...state.moveLog].reverse().slice(0,100);
+  if(log.length===0){body.innerHTML=`<tr><td colspan="6" style="text-align:center;padding:24px;font-family:'IBM Plex Mono',monospace;font-size:0.68rem;color:var(--muted)">NO MOVES YET</td></tr>`;return;}
+  body.innerHTML=log.map(e=>`
+    <tr>
+      <td class="lt">${e.time}</td>
+      <td class="lw">${e.by||'?'}</td>
+      <td class="lc">CELL ${e.cell}</td>
+      <td class="lf">${(e.field||'').toUpperCase()}</td>
+      <td><span class="lfrom">${e.from||'—'}</span></td>
+      <td><span class="lto">${e.to||'—'}</span></td>
+    </tr>`).join('');
+}
+
+// ── SUMMARY ──
+function updateSummary() {
+  const cells=Object.values(state.cells);
+  document.getElementById('sActive').textContent=cells.filter(c=>c.status==='active').length;
+  document.getElementById('sDown').textContent=cells.filter(c=>c.status==='down').length;
+  document.getElementById('sEval').textContent=cells.filter(c=>c.status==='eval').length;
+  document.getElementById('sPilots').textContent=cells.filter(c=>c.pilot&&c.pilot.trim()).length;
+  document.getElementById('sRes').textContent=cells.filter(c=>c.researcher&&c.researcher.trim()&&!['none','n/a','—'].includes(c.researcher.toLowerCase())).length;
+  const ta=TERRAN.filter(id=>state.cells[id].status==='active').length;
+  const tta=TATOOINE.filter(id=>state.cells[id].status==='active').length;
+  document.getElementById('statT').textContent=`${ta}/${TERRAN.length} ACTIVE`;
+  document.getElementById('statTT').textContent=`${tta}/${TATOOINE.length} ACTIVE`;
+}
+
+// ── TABS ──
+window.switchTab = function(name,btn) {
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById(`tab-${name}`).classList.add('active');
+  if(btn)btn.classList.add('active');
+}
+
+// ── SHIFT ──
+window.setShift = function(s) {
+  state.shift=s;
+  document.getElementById('btnAM').classList.toggle('active',s==='AM');
+  document.getElementById('btnPM').classList.toggle('active',s==='PM');
+  pushToFirebase();
+}
+
+// ── LOGOUT ──
+window.doLogout = function() {
+  localStorage.removeItem('sd-floor-me');
+  location.reload();
+}
+
+// ── AUTO SAVE ──
+let asT;
+window.autoSave = function(){clearTimeout(asT);asT=setTimeout(pushToFirebase,2000);}
+window.forceSave = function(){pushToFirebase();const s=document.getElementById('saveSt');s.classList.add('show');setTimeout(()=>s.classList.remove('show'),2000);}
+
+// ── EXPORT ──
+window.exportShift = function() {
+  const now=new Date().toLocaleString();
+  let out=`LIVE FLOOR TRACKER EXPORT\nDate/Time: ${now}\nShift: ${state.shift}\nExported by: ${me.name}\n${'='.repeat(55)}\n\n`;
+  ['LAB 1 — TERRAN','LAB 2 — TATOOINE'].forEach((lab,li)=>{
+    out+=`${lab}\n${'-'.repeat(35)}\n`;
+    (li===0?TERRAN:TATOOINE).forEach(id=>{
+      const c=state.cells[id];const dt=dtLocal[id];
+      out+=`Cell ${id} [${c.status.toUpperCase()}]\n`;
+      out+=`  Pilot:      ${c.pilot||'—'}\n`;
+      out+=`  Robot:      ${c.robot||'—'}\n`;
+      out+=`  Script:     ${c.script||'—'}\n`;
+      out+=`  Researcher: ${c.researcher||'—'}\n`;
+      out+=`  Arrival:    ${c.resArrival||'—'}\n`;
+      out+=`  Downtime:   ${dt.totalMin>0?dt.totalMin+' min':'0 min'}\n`;
+      if(c.noteLead)out+=`  Lead Note:  ${c.noteLead}\n`;
+      if(c.noteRes)out+=`  Res Note:   ${c.noteRes}\n`;
+      if(c.notePilot)out+=`  Pilot Note: ${c.notePilot}\n`;
+      out+='\n';
+    });
+  });
+  if(state.bench.length>0){out+=`CALLED OUT\n${'-'.repeat(35)}\n`;state.bench.forEach(n=>out+=`  🚫 ${n}\n`);out+='\n';}
+  if(state.oc.length>0){out+=`OC PILOTS\n${'-'.repeat(35)}\n`;state.oc.forEach(o=>out+=`  👁 ${o.name}${o.role?' — '+o.role:''}\n`);out+='\n';}
+  if(state.moveLog.length>0){
+    out+=`MOVEMENT LOG (${state.moveLog.length} moves)\n${'-'.repeat(35)}\n`;
+    state.moveLog.forEach(e=>out+=`  [${e.time}] ${(e.by||'?').padEnd(12)} Cell ${e.cell} | ${(e.field||'').toUpperCase().padEnd(12)} | ${(e.from||'—').padEnd(18)} → ${e.to||'—'}\n`);
+    out+='\n';
+  }
+  if(state.notesLead){out+=`LEAD NOTES\n${'-'.repeat(35)}\n${state.notesLead}\n\n`;}
+  if(state.notesRes){out+=`RESEARCHER NOTES\n${'-'.repeat(35)}\n${state.notesRes}\n\n`;}
+  if(state.notesPilot){out+=`PILOT NOTES\n${'-'.repeat(35)}\n${state.notesPilot}\n\n`;}
+  const blob=new Blob([out],{type:'text/plain'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`floor-log-${new Date().toISOString().slice(0,10)}-${state.shift}-${me.name}.txt`;
+  a.click();
+}
+
+// ── RESET ──
+window.resetShift = function() {
+  if(!confirm('Clear all floor data for new shift?'))return;
+  ALL.forEach(id=>{
+    state.cells[id]={status:'active',pilot:'',robot:'',script:'',researcher:'',resArrival:'',noteLead:'',noteRes:'',notePilot:''};
+    dtLocal[id]={running:false,start:null,totalMin:0};
+  });
+  state.bench=[];state.oc=[];state.moveLog=[];
+  state.notesLead='';state.notesRes='';state.notesPilot='';
+  pushToFirebase();renderAll();
+}
+
+// ── CLOCK ──
+setInterval(()=>{
+  const n=new Date();
+  document.getElementById('clockDisplay').textContent=n.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+},1000);
+</script>
+<style>
+:root{--bg:#060d0a;--panel:#0d1f17;--panel2:#122618;--border:rgba(52,211,153,0.15);--green:#34d399;--gdim:#1a4d36;--amber:#fbbf24;--red:#f87171;--blue:#60a5fa;--muted:#6b8f7a;--text:#e2efe8;--white:#f0faf4;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;min-height:100vh;padding-bottom:80px;}
+#loginScreen{position:fixed;inset:0;background:var(--bg);z-index:999;display:flex;align-items:center;justify-content:center;padding:20px;}
+.login-box{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:36px 32px;max-width:360px;width:100%;text-align:center;}
+.login-logo{font-family:'IBM Plex Mono',monospace;font-size:1rem;color:var(--green);letter-spacing:3px;font-weight:600;margin-bottom:6px;}
+.login-sub{font-size:0.76rem;color:var(--muted);margin-bottom:24px;line-height:1.5;}
+.login-label{font-family:'IBM Plex Mono',monospace;font-size:0.6rem;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;text-align:left;margin-bottom:5px;}
+.login-input,.login-select{width:100%;background:rgba(52,211,153,0.05);border:1px solid var(--border);border-radius:7px;padding:10px 12px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.88rem;margin-bottom:10px;}
+.login-input:focus,.login-select:focus{outline:none;border-color:var(--green);}
+.login-select option{background:var(--panel);}
+.login-btn{width:100%;background:var(--green);border:none;border-radius:7px;padding:12px;color:var(--bg);font-family:'IBM Plex Mono',monospace;font-size:0.78rem;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;}
+.login-btn:hover{opacity:0.85;}
+.login-error{color:var(--red);font-size:0.72rem;margin-top:8px;display:none;}
+header{background:var(--panel);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;flex-wrap:wrap;gap:6px;}
+.brand{font-family:'IBM Plex Mono',monospace;font-size:0.72rem;color:var(--green);letter-spacing:2px;font-weight:600;}
+.live-wrap{display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--green);letter-spacing:1px;}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1.4s infinite;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:0.2;}}
+.who-badge{background:var(--gdim);border:1px solid rgba(52,211,153,0.3);border-radius:100px;padding:3px 10px;font-family:'IBM Plex Mono',monospace;font-size:0.6rem;color:var(--green);letter-spacing:1px;cursor:pointer;}
+.clock{font-family:'IBM Plex Mono',monospace;font-size:0.82rem;color:var(--amber);font-weight:600;}
+.shift-toggle{display:flex;background:var(--bg);border:1px solid var(--border);border-radius:6px;overflow:hidden;}
+.shift-btn{padding:5px 10px;border:none;background:transparent;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:0.58rem;letter-spacing:1px;cursor:pointer;}
+.shift-btn.active{background:var(--gdim);color:var(--green);}
+.tab-bar{display:flex;background:var(--panel2);border-bottom:1px solid var(--border);overflow-x:auto;}
+.tab-btn{padding:9px 16px;border:none;background:transparent;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:0.6rem;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;border-bottom:2px solid transparent;transition:all 0.2s;white-space:nowrap;}
+.tab-btn.active{color:var(--green);border-bottom-color:var(--green);}
+.summary-bar{display:flex;background:var(--panel2);border-bottom:1px solid var(--border);overflow-x:auto;}
+.sum-item{padding:7px 12px;border-right:1px solid var(--border);text-align:center;min-width:76px;flex-shrink:0;}
+.sum-num{font-family:'IBM Plex Mono',monospace;font-size:1.1rem;font-weight:600;}
+.sum-label{font-size:0.5rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-top:1px;}
+.cg{color:var(--green);}.cr{color:var(--red);}.ca{color:var(--amber);}.cb{color:var(--blue);}
+.quick-bar{background:rgba(248,113,113,0.05);border-bottom:1px solid rgba(248,113,113,0.15);padding:6px 12px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+.qb-label{font-family:'IBM Plex Mono',monospace;font-size:0.56rem;color:var(--red);letter-spacing:1.5px;text-transform:uppercase;flex-shrink:0;}
+.oc-bar{background:rgba(96,165,250,0.04);border-bottom:1px solid rgba(96,165,250,0.12);padding:6px 12px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+.oc-label{font-family:'IBM Plex Mono',monospace;font-size:0.56rem;color:var(--blue);letter-spacing:1.5px;text-transform:uppercase;flex-shrink:0;}
+.chip{border-radius:100px;padding:3px 9px;font-size:0.68rem;display:flex;align-items:center;gap:4px;}
+.chip-red{background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);color:var(--red);}
+.chip-blue{background:rgba(96,165,250,0.1);border:1px solid rgba(96,165,250,0.25);color:var(--blue);}
+.chip button{background:none;border:none;cursor:pointer;font-size:0.75rem;opacity:0.6;padding:0;color:inherit;}
+.add-chip{border-radius:100px;padding:3px 9px;font-size:0.65rem;cursor:pointer;border-style:dashed;}
+.add-chip-red{background:rgba(248,113,113,0.05);border:1px dashed rgba(248,113,113,0.3);color:rgba(248,113,113,0.5);}
+.add-chip-blue{background:rgba(96,165,250,0.05);border:1px dashed rgba(96,165,250,0.3);color:rgba(96,165,250,0.5);}
+.tab-content{display:none;}.tab-content.active{display:block;}
+.labs-wrap{padding:12px 12px 0;}
+.lab-sec{margin-bottom:16px;}
+.lab-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);}
+.lab-name{font-family:'IBM Plex Mono',monospace;font-size:0.8rem;font-weight:600;color:var(--green);letter-spacing:2px;}
+.lab-sub{font-size:0.63rem;color:var(--muted);margin-left:6px;}
+.lab-stat{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--muted);}
+.cells-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(272px,1fr));gap:9px;}
+.cell-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+.cell-card.st-active{border-color:rgba(52,211,153,0.3);}
+.cell-card.st-down{border-color:rgba(248,113,113,0.45);}
+.cell-card.st-eval{border-color:rgba(251,191,36,0.45);}
+.cell-card.st-idle{border-color:rgba(107,143,122,0.25);}
+.cell-hdr{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:var(--panel2);border-bottom:1px solid var(--border);}
+.cell-id{font-family:'IBM Plex Mono',monospace;font-size:0.88rem;font-weight:600;color:var(--white);}
+.cell-editor{font-family:'IBM Plex Mono',monospace;font-size:0.52rem;color:var(--green);background:rgba(52,211,153,0.07);border:1px solid rgba(52,211,153,0.15);border-radius:100px;padding:2px 6px;}
+.badge{font-family:'IBM Plex Mono',monospace;font-size:0.52rem;letter-spacing:1.5px;padding:3px 8px;border-radius:100px;text-transform:uppercase;cursor:pointer;border:none;}
+.b-active{background:rgba(52,211,153,0.12);color:var(--green);border:1px solid rgba(52,211,153,0.3);}
+.b-down{background:rgba(248,113,113,0.12);color:var(--red);border:1px solid rgba(248,113,113,0.3);}
+.b-eval{background:rgba(251,191,36,0.12);color:var(--amber);border:1px solid rgba(251,191,36,0.3);}
+.b-idle{background:rgba(107,143,122,0.1);color:var(--muted);border:1px solid rgba(107,143,122,0.2);}
+.cell-body{padding:8px 10px;display:flex;flex-direction:column;gap:5px;}
+.cell-row{display:flex;align-items:center;gap:5px;}
+.ri{font-size:0.8rem;flex-shrink:0;width:16px;text-align:center;}
+.rl{font-family:'IBM Plex Mono',monospace;font-size:0.54rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;width:64px;flex-shrink:0;}
+.ci{flex:1;background:rgba(52,211,153,0.04);border:1px solid rgba(52,211,153,0.1);border-radius:4px;padding:4px 7px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.74rem;min-width:0;}
+.ci:focus{outline:none;border-color:rgba(52,211,153,0.4);}
+.ci::placeholder{color:rgba(107,143,122,0.4);font-size:0.68rem;}
+.cell-notes{display:flex;flex-direction:column;gap:4px;padding-top:5px;border-top:1px solid var(--border);}
+.cn-block{border-radius:5px;overflow:hidden;border:1px solid;}
+.cn-lead{border-color:rgba(52,211,153,0.2);}.cn-res{border-color:rgba(251,191,36,0.2);}.cn-pilot{border-color:rgba(96,165,250,0.2);}
+.cn-lbl{font-family:'IBM Plex Mono',monospace;font-size:0.52rem;letter-spacing:1px;text-transform:uppercase;padding:3px 6px;}
+.cn-lead .cn-lbl{background:rgba(52,211,153,0.08);color:var(--green);}
+.cn-res .cn-lbl{background:rgba(251,191,36,0.08);color:var(--amber);}
+.cn-pilot .cn-lbl{background:rgba(96,165,250,0.08);color:var(--blue);}
+.cn-ta{width:100%;background:var(--panel);border:none;border-top:1px solid rgba(255,255,255,0.04);padding:5px 7px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.7rem;resize:none;min-height:44px;line-height:1.5;}
+.cn-ta:focus{outline:none;}
+.cn-ta::placeholder{color:rgba(107,143,122,0.38);font-size:0.66rem;}
+.dt-row{display:flex;align-items:center;gap:5px;padding-top:4px;border-top:1px solid var(--border);}
+.dt-lbl{font-family:'IBM Plex Mono',monospace;font-size:0.5rem;color:var(--red);letter-spacing:1px;text-transform:uppercase;}
+.dt-btn{padding:3px 7px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:0.54rem;letter-spacing:1px;border:none;cursor:pointer;}
+.dt-start{background:rgba(248,113,113,0.12);color:var(--red);border:1px solid rgba(248,113,113,0.3);}
+.dt-stop{background:rgba(52,211,153,0.12);color:var(--green);border:1px solid rgba(52,211,153,0.3);}
+.dt-disp{font-family:'IBM Plex Mono',monospace;font-size:0.62rem;color:var(--red);flex:1;}
+.dt-tot{font-family:'IBM Plex Mono',monospace;font-size:0.54rem;color:var(--muted);}
+.log-wrap{padding:12px;}
+.log-table-wrap{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden;overflow-x:auto;}
+table{width:100%;border-collapse:collapse;min-width:480px;}
+th{background:var(--panel2);font-family:'IBM Plex Mono',monospace;font-size:0.52rem;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);}
+td{padding:6px 10px;font-size:0.72rem;border-bottom:1px solid rgba(52,211,153,0.05);}
+tr:last-child td{border-bottom:none;}
+.lt{font-family:'IBM Plex Mono',monospace;font-size:0.6rem;color:var(--muted);white-space:nowrap;}
+.lw{font-size:0.65rem;color:var(--blue);}
+.lc{font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:var(--green);font-weight:600;}
+.lf{font-size:0.62rem;color:var(--amber);}
+.lfrom{color:var(--red);}.lto{color:var(--green);}
+.notes-wrap{padding:12px;display:flex;flex-direction:column;gap:10px;}
+.notes-block{border-radius:9px;overflow:hidden;border:1px solid;}
+.nb-lead{border-color:rgba(52,211,153,0.25);}.nb-res{border-color:rgba(251,191,36,0.25);}.nb-pilot{border-color:rgba(96,165,250,0.25);}
+.nb-hdr{display:flex;align-items:flex-start;gap:8px;padding:9px 12px;}
+.nb-lead .nb-hdr{background:rgba(52,211,153,0.06);}
+.nb-res .nb-hdr{background:rgba(251,191,36,0.06);}
+.nb-pilot .nb-hdr{background:rgba(96,165,250,0.06);}
+.nb-icon{font-size:1.2rem;flex-shrink:0;}
+.nb-title{font-family:'IBM Plex Mono',monospace;font-size:0.7rem;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px;}
+.nb-lead .nb-title{color:var(--green);}.nb-res .nb-title{color:var(--amber);}.nb-pilot .nb-title{color:var(--blue);}
+.nb-sub{font-size:0.64rem;color:var(--muted);line-height:1.4;}
+.nb-ts{margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:0.52rem;color:var(--muted);white-space:nowrap;flex-shrink:0;}
+.nb-ta{width:100%;background:var(--panel);border:none;border-top:1px solid rgba(255,255,255,0.05);padding:9px 12px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.78rem;resize:vertical;min-height:90px;line-height:1.6;}
+.nb-ta:focus{outline:none;}
+.nb-ta::placeholder{color:rgba(107,143,122,0.4);font-size:0.72rem;line-height:1.7;}
+.action-bar{display:flex;gap:7px;padding:9px 12px;border-top:1px solid var(--border);background:var(--panel);position:fixed;bottom:0;left:0;right:0;z-index:50;flex-wrap:wrap;}
+.action-btn{padding:8px 14px;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:0.6rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border:none;}
+.btn-save{background:var(--green);color:var(--bg);font-weight:600;}
+.btn-reset{background:transparent;color:var(--red);border:1px solid rgba(248,113,113,0.3);}
+.btn-export{background:transparent;color:var(--blue);border:1px solid rgba(96,165,250,0.3);}
+.save-st{font-family:'IBM Plex Mono',monospace;font-size:0.56rem;color:var(--green);align-self:center;letter-spacing:1px;opacity:0;transition:opacity 0.3s;}
+.save-st.show{opacity:1;}
+.sync-st{font-family:'IBM Plex Mono',monospace;font-size:0.56rem;color:var(--muted);align-self:center;letter-spacing:1px;margin-left:auto;}
+@media(max-width:560px){.cells-grid{grid-template-columns:1fr;}}
+::-webkit-scrollbar{height:3px;width:3px;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+</style>
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="login-logo">🤖 LIVE FLOOR</div>
+    <div class="login-sub">Stunt & Doubles · Atlas Program<br>Sign in once — remembered next time</div>
+    <div class="login-label">Your Name</div>
+    <input class="login-input" id="loginName" placeholder="e.g. Eli, Max, Jesse..."/>
+    <div class="login-label">Your Role</div>
+    <select class="login-select" id="loginRole">
+      <option>Lead</option><option>Co-Lead</option><option>Researcher</option><option>OC</option>
+    </select>
+    <button class="login-btn" onclick="doLogin()">JOIN FLOOR</button>
+    <div class="login-error" id="loginError">Please enter your name</div>
+  </div>
+</div>
+
+<header>
+  <div class="brand">🤖 LIVE FLOOR</div>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <div class="live-wrap"><div class="live-dot"></div>FIREBASE LIVE</div>
+    <div class="who-badge" id="whoBadge" onclick="doLogout()" title="Click to sign out">—</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+    <div class="clock" id="clockDisplay">--:--:--</div>
+    <div class="shift-toggle">
+      <button class="shift-btn active" id="btnAM" onclick="setShift('AM')">AM</button>
+      <button class="shift-btn" id="btnPM" onclick="setShift('PM')">PM</button>
+    </div>
+  </div>
+</header>
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('floor',this)">🗺 Floor</button>
+  <button class="tab-btn" onclick="switchTab('log',this)">📋 Move Log <span style="background:rgba(251,191,36,0.2);color:var(--amber);border-radius:100px;padding:1px 5px;font-size:0.52rem;margin-left:3px;" id="sMoves">0</span></button>
+  <button class="tab-btn" onclick="switchTab('notes',this)">📝 Notes</button>
+</div>
+
+<div class="summary-bar">
+  <div class="sum-item"><div class="sum-num cg" id="sActive">0</div><div class="sum-label">Active</div></div>
+  <div class="sum-item"><div class="sum-num cr" id="sDown">0</div><div class="sum-label">Down</div></div>
+  <div class="sum-item"><div class="sum-num ca" id="sEval">0</div><div class="sum-label">Eval</div></div>
+  <div class="sum-item"><div class="sum-num cb" id="sPilots">0</div><div class="sum-label">Pilots</div></div>
+  <div class="sum-item"><div class="sum-num cr" id="sBench">0</div><div class="sum-label">Out</div></div>
+  <div class="sum-item"><div class="sum-num ca" id="sRes">0</div><div class="sum-label">Research</div></div>
+</div>
+
+<div class="quick-bar">
+  <div class="qb-label">🚫 Called Out</div>
+  <div id="benchChips" style="display:flex;gap:5px;flex-wrap:wrap;flex:1;"></div>
+  <button class="add-chip add-chip-red" onclick="addBench()">+ Add</button>
+</div>
+<div class="oc-bar">
+  <div class="oc-label">👁 OC Pilots</div>
+  <div id="ocChips" style="display:flex;gap:5px;flex-wrap:wrap;flex:1;"></div>
+  <button class="add-chip add-chip-blue" onclick="addOC()">+ OC</button>
+</div>
+
+<div class="tab-content active" id="tab-floor">
+  <div class="labs-wrap">
+    <div class="lab-sec">
+      <div class="lab-hdr">
+        <div style="display:flex;align-items:center;">
+          <div class="lab-name">LAB 1 — TERRAN</div><div class="lab-sub">A B C D</div>
+        </div>
+        <div class="lab-stat" id="statT">—</div>
+      </div>
+      <div class="cells-grid" id="terranCells"></div>
+    </div>
+    <div class="lab-sec">
+      <div class="lab-hdr">
+        <div style="display:flex;align-items:center;">
+          <div class="lab-name">LAB 2 — TATOOINE</div><div class="lab-sub">E F G H I J</div>
+        </div>
+        <div class="lab-stat" id="statTT">—</div>
+      </div>
+      <div class="cells-grid" id="tatooineCells"></div>
+    </div>
+  </div>
+</div>
+
+<div class="tab-content" id="tab-log">
+  <div class="log-wrap">
+    <div class="log-table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>By</th><th>Cell</th><th>Field</th><th>From</th><th>To</th></tr></thead>
+        <tbody id="logBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="tab-content" id="tab-notes">
+  <div class="notes-wrap">
+    <div class="notes-block nb-lead">
+      <div class="nb-hdr"><div class="nb-icon">🎯</div>
+        <div><div class="nb-title">Lead Team Notes</div><div class="nb-sub">Reprioritizations · P0/P1 · Blockers · Handoff</div></div>
+        <div class="nb-ts" id="ts-lead"></div>
+      </div>
+      <textarea class="nb-ta" id="notesLead" placeholder="— P0/P1 changes&#10;— Station decisions&#10;— Blockers in ORCA/Buganizer&#10;— What incoming lead needs to know" oninput="noteChange('lead')"></textarea>
+    </div>
+    <div class="notes-block nb-res">
+      <div class="nb-hdr"><div class="nb-icon">🔬</div>
+        <div><div class="nb-title">Researcher Notes</div><div class="nb-sub">Eval sessions · Arrivals · Requests · Feedback</div></div>
+        <div class="nb-ts" id="ts-res"></div>
+      </div>
+      <textarea class="nb-ta" id="notesRes" placeholder="— Researcher name + arrival time&#10;— Cell evaluated and feedback&#10;— Demo requests from Amit" oninput="noteChange('res')"></textarea>
+    </div>
+    <div class="notes-block nb-pilot">
+      <div class="nb-hdr"><div class="nb-icon">🧑‍✈️</div>
+        <div><div class="nb-title">Pilot Notes</div><div class="nb-sub">Performance · Coaching · Issues reported</div></div>
+        <div class="nb-ts" id="ts-pilot"></div>
+      </div>
+      <textarea class="nb-ta" id="notesPilot" placeholder="— Who performed well&#10;— Who needs coaching&#10;— Script questions from pilots" oninput="noteChange('pilot')"></textarea>
+    </div>
+  </div>
+</div>
+
+<div class="action-bar">
+  <button class="action-btn btn-save" onclick="forceSave()">💾 Save</button>
+  <button class="action-btn btn-export" onclick="exportShift()">📋 Export</button>
+  <button class="action-btn btn-reset" onclick="resetShift()">🔄 New Shift</button>
+  <span class="sync-st" id="syncSt">Connecting...</span>
+  <span class="save-st" id="saveSt">SAVED ✓</span>
+</div>
+</body>
+</html>
