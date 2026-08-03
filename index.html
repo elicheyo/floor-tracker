@@ -1,0 +1,1505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live Floor — Stunt & Doubles</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+const firebaseConfig = { databaseURL: "https://floor-tracker-28495-default-rtdb.firebaseio.com" };
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+const TERRAN = ['A','B','C','D'];
+const TATOOINE = ['E','F','G','H','I','J'];
+const ALL = [...TERRAN,...TATOOINE];
+
+// ── PILOT ROSTER from Bionic Dashboard ──
+const PILOTS = [
+  { name:'Ahmad Gazali',       ldap:'agazali',        orca:false },
+  { name:'Ayden Nguyen',       ldap:'aydenn',         orca:false },
+  { name:'Baron Cai',          ldap:'caib',           orca:false },
+  { name:'Brandon Duong',      ldap:'brandonduong',   orca:false },
+  { name:'Bryan Hui',          ldap:'bryanhui',       orca:false },
+  { name:'Derek Dinh',         ldap:'derekdinh',      orca:false },
+  { name:'Ewin Mathew',        ldap:'ewinm',          orca:false },
+  { name:'Ezuma Ble',          ldap:'ezuma',          orca:false },
+  { name:'Ivan Kwok',          ldap:'kwokivan',       orca:false },
+  { name:'James Perez',        ldap:'perezjames',     orca:false },
+  { name:'Jeanine Renoblas',   ldap:'jeaniner',       orca:false },
+  { name:'Jonathan Chavez',    ldap:'chavezje',       orca:false },
+  { name:'Kynan Hui',          ldap:'kynanh',         orca:true  },
+  { name:'Manav Choudhary',    ldap:'manavchoudhary', orca:true  },
+  { name:'Marc Librado',       ldap:'mlibrado',       orca:false },
+  { name:'Marvin Librado',     ldap:'libradom',       orca:false },
+  { name:'Matthew Bernard',    ldap:'mabernard',      orca:false },
+  { name:'Merlin Lopez',       ldap:'perezlopezm',    orca:true  },
+  { name:'Myron Chee',         ldap:'myronchee',      orca:true  },
+  { name:'Nelson Pham',        ldap:'phamnelson',     orca:true  },
+  { name:'Reese Co',           ldap:'reeseco',        orca:true  },
+  { name:'Sean Allen',         ldap:'allense',        orca:false },
+  { name:'Sebastian Aviles-Maya', ldap:'avilesmaya',  orca:true  },
+  { name:'Timothy Vo',         ldap:'timothyvo',      orca:false },
+  { name:'Victoria Sakai',     ldap:'vsakai',         orca:false },
+  { name:'Wesley Ruan',        ldap:'ruanw',          orca:false },
+  { name:'Yossef Eini',        ldap:'yossefe',        orca:false },
+];
+
+let me = { name:'', role:'Lead' };
+let currentShift = 'AM';
+let dtLocal = {};
+let dtTimers = {};
+
+// State is now per-shift: state.AM and state.PM are completely separate floors
+function blankShiftState() {
+  const cells = {};
+  ALL.forEach(id => cells[id] = {status:'active',pilot:'',pilot2:'',robot:'',script:'',researcher:'',resArrival:'',noteLead:'',noteRes:'',notePilot:''});
+  return {
+    cells,
+    bench: [],
+    oc: [],
+    notesLead: '',
+    notesRes: '',
+    notesPilot: '',
+    notesLeadTS: '',
+    notesResTS: '',
+    notesPilotTS: '',
+    moveLog: [],
+    // Daily Ops Board
+    mission: '',
+    p0task: '',
+    p1task: '',
+    dataGoal: '',
+    dataAchieved: '',
+    completedGoals: '',
+    // Priority change log
+    priorityLog: [],
+    // Handoff note
+    handoffNote: '',
+    // Shift assignment — pilot per cell per shift
+    shiftAssign: { AM:{}, PM:{} },
+    calledOut: []
+  };
+}
+
+let state = { AM: blankShiftState(), PM: blankShiftState() };
+
+ALL.forEach(id => { dtLocal[id] = {running:false,start:null,totalMin:0}; });
+
+function S() { return state[currentShift]; }
+
+// ── LOGIN ──
+function showFloor() {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('whoBadge').textContent = me.name + ' · ' + me.role;
+  startFirebase();
+}
+
+window.doLogin = function() {
+  const n = document.getElementById('loginName').value.trim();
+  if (!n) { document.getElementById('loginError').style.display='block'; return; }
+  me.name = n;
+  me.role = document.getElementById('loginRole').value;
+  localStorage.setItem('sd-me', JSON.stringify(me));
+  sessionStorage.setItem('sd-me', JSON.stringify(me));
+  showFloor();
+}
+
+function checkLogin() {
+  try {
+    const saved = sessionStorage.getItem('sd-me') || localStorage.getItem('sd-me');
+    if (saved) {
+      const p = JSON.parse(saved);
+      if (p && p.name) {
+        me = p;
+        localStorage.setItem('sd-me', JSON.stringify(me));
+        sessionStorage.setItem('sd-me', JSON.stringify(me));
+        showFloor();
+        return;
+      }
+    }
+  } catch(e) {}
+}
+// render cells immediately on load so page never looks blank
+window.addEventListener('DOMContentLoaded', () => {
+  renderAll();
+  setTimeout(checkLogin, 150);
+});
+
+window.doLogout = function() {
+  localStorage.removeItem('sd-me');
+  sessionStorage.removeItem('sd-me');
+  location.reload();
+}
+
+// ── FIREBASE ──
+function startFirebase() {
+  // render immediately with blank state so cells show right away
+  renderAll();
+  setSyncStatus('Connecting...');
+  onValue(ref(db, 'floorv3'), (snap) => {
+    const data = snap.val();
+    if (data) {
+      if (data.AM) state.AM = { ...blankShiftState(), ...data.AM };
+      if (data.PM) state.PM = { ...blankShiftState(), ...data.PM };
+      // ensure all cells exist
+      ['AM','PM'].forEach(sh => {
+        ALL.forEach(id => {
+          if (!state[sh].cells[id]) state[sh].cells[id] = {status:'active',pilot:'',robot:'',script:'',researcher:'',resArrival:'',noteLead:'',noteRes:'',notePilot:''};
+        });
+        if (!state[sh].priorityLog) state[sh].priorityLog = [];
+      });
+      renderAll();
+    }
+    setSyncStatus('LIVE ✓ ' + new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}));
+  }, (err) => {
+    setSyncStatus('OFFLINE — changes save locally only');
+    console.error('Firebase:', err.message);
+  });
+}
+
+async function push() {
+  try {
+    await set(ref(db, 'floorv3'), state);
+  } catch(e) { setSyncStatus('SYNC ERROR'); }
+}
+
+function setSyncStatus(m) { const el=document.getElementById('syncSt'); if(el)el.textContent=m; }
+
+// ── SHIFT SWITCH ──
+window.setShift = function(s) {
+  if (s === currentShift) return;
+  currentShift = s;
+  document.getElementById('btnAM').classList.toggle('active', s==='AM');
+  document.getElementById('btnPM').classList.toggle('active', s==='PM');
+  document.getElementById('shiftLabel').textContent = s + ' SHIFT';
+  // reset local DT timers when switching
+  ALL.forEach(id => { clearInterval(dtTimers[id]); dtTimers[id]=null; dtLocal[id]={running:false,start:null,totalMin:0}; });
+  renderAll();
+}
+
+// ── CHANGE HANDLER ──
+window.handleChange = function(cellId, field, input) {
+  const prev = typeof input.getAttribute === 'function' ? (input.getAttribute('data-prev') || '') : '';
+  const next = (input.value || '').trim();
+  if (prev === next) return;
+  S().cells[cellId][field] = next;
+  const now = new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  S().moveLog.push({time:now, cell:cellId, field, from:prev||'—', to:next||'—', by:me.name, shift:currentShift});
+  if (typeof input.setAttribute === 'function') input.setAttribute('data-prev', next);
+  const et = document.getElementById('editor-'+cellId);
+  if (et) { et.textContent=me.name; et.style.display=''; }
+  // sync to shift assignment tab
+  if (field === 'pilot' || field === 'pilot2') {
+    if (!S().shiftAssign) S().shiftAssign = {AM:{},PM:{}};
+    if (!S().shiftAssign[currentShift]) S().shiftAssign[currentShift] = {};
+    if (!S().shiftAssign[currentShift][cellId]) S().shiftAssign[currentShift][cellId] = {};
+    S().shiftAssign[currentShift][cellId][field] = next;
+    renderShiftTab();
+  }
+  push(); renderLog(); updateSummary(); updateMap();
+}
+
+window.cellNote = function(id, field, ta) { S().cells[id][field]=ta.value; autoSave(); }
+
+// ── STATUS ──
+window.cycleStatus = function(id) {
+  const order=['active','idle','eval','down'];
+  const prev=S().cells[id].status;
+  const next=order[(order.indexOf(prev)+1)%order.length];
+  S().cells[id].status=next;
+  document.getElementById('card-'+id).className='cell-card st-'+next;
+  const b=document.getElementById('badge-'+id);
+  b.className='badge b-'+next; b.textContent=next.toUpperCase();
+  const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  S().moveLog.push({time:now,cell:id,field:'status',from:prev,to:next,by:me.name,shift:currentShift});
+  push(); updateSummary();
+}
+
+// ── DOWNTIME ──
+window.toggleDT = function(id) {
+  const dt=dtLocal[id];
+  if(!dt.running){
+    dt.running=true; dt.start=Date.now();
+    dtTimers[id]=setInterval(()=>updateDTDisp(id),1000);
+    document.getElementById('dtbtn-'+id).className='dt-btn dt-stop';
+    document.getElementById('dtbtn-'+id).textContent='STOP';
+    const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    S().moveLog.push({time:now,cell:id,field:'downtime',from:'UP',to:'DOWN ⏱',by:me.name,shift:currentShift});
+    push();
+  } else {
+    dt.running=false; clearInterval(dtTimers[id]);
+    const mins=Math.max(1,Math.floor((Date.now()-dt.start)/60000));
+    dt.totalMin+=mins; dt.start=null;
+    document.getElementById('dtbtn-'+id).className='dt-btn dt-start';
+    document.getElementById('dtbtn-'+id).textContent='START';
+    document.getElementById('dtd-'+id).textContent=dt.totalMin+'m';
+    document.getElementById('dtt-'+id).textContent=dt.totalMin+'m total';
+    const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    S().moveLog.push({time:now,cell:id,field:'downtime',from:'DOWN ⏱',to:'UP — '+mins+'m',by:me.name,shift:currentShift});
+    push();
+  }
+}
+function updateDTDisp(id){
+  const dt=dtLocal[id];
+  if(!dt.running||!dt.start)return;
+  const s=Math.floor((Date.now()-dt.start)/1000);
+  const el=document.getElementById('dtd-'+id);
+  if(el)el.textContent=Math.floor(s/60).toString().padStart(2,'0')+':'+((s%60).toString().padStart(2,'0'));
+}
+
+// ── BENCH / OC ──
+window.addBench=function(){const n=prompt('Pilot name (called out):');if(n&&n.trim()){S().bench.push(n.trim());renderBench();push();}}
+window.removeBench=function(i){S().bench.splice(i,1);renderBench();push();}
+function renderBench(){
+  document.getElementById('benchChips').innerHTML=S().bench.map((n,i)=>
+    `<div class="chip chip-red">🚫 ${n}<button onclick="removeBench(${i})">×</button></div>`).join('');
+  document.getElementById('sBench').textContent=S().bench.length;
+}
+window.addOC=function(){const n=prompt('OC pilot:');if(!n||!n.trim())return;const r=prompt('Doing what?')||'';S().oc.push({name:n.trim(),role:r.trim()});renderOC();push();}
+window.removeOC=function(i){S().oc.splice(i,1);renderOC();push();}
+function renderOC(){
+  const el=document.getElementById('ocChips');
+  el.innerHTML=S().oc.length===0?'<span style="font-size:0.7rem;color:var(--muted)">None</span>':
+    S().oc.map((o,i)=>`<div class="chip chip-blue">👁 ${o.name}${o.role?' — '+o.role:''}<button onclick="removeOC(${i})">×</button></div>`).join('');
+}
+
+// ── NOTES ──
+window.noteChange=function(type){
+  const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+  const ts=me.name+' · '+now;
+  if(type==='lead'){S().notesLead=document.getElementById('notesLead').value;S().notesLeadTS=ts;document.getElementById('ts-lead').textContent=ts;}
+  if(type==='res'){S().notesRes=document.getElementById('notesRes').value;S().notesResTS=ts;document.getElementById('ts-res').textContent=ts;}
+  if(type==='pilot'){S().notesPilot=document.getElementById('notesPilot').value;S().notesPilotTS=ts;document.getElementById('ts-pilot').textContent=ts;}
+  autoSave();
+}
+
+// ── OPS BOARD ──
+window.opsChange=function(field,el){S()[field]=el.value||el.textContent;autoSave();}
+window.addCompletedGoal=function(){
+  const g=prompt('What did we complete?');
+  if(!g||!g.trim())return;
+  const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+  S().completedGoals=(S().completedGoals||'')+(S().completedGoals?'\n':'')+'✅ '+g.trim()+' ('+me.name+' · '+now+')';
+  document.getElementById('completedGoals').value=S().completedGoals;
+  push();
+}
+function renderOpsBoard(){
+  const s=S();
+  const setVal=(id,val)=>{const el=document.getElementById(id);if(el&&document.activeElement!==el)el.value=val||'';}
+  setVal('mission',s.mission);
+  setVal('p0task',s.p0task);
+  setVal('p1task',s.p1task);
+  setVal('dataGoal',s.dataGoal);
+  setVal('dataAchieved',s.dataAchieved);
+  setVal('completedGoals',s.completedGoals);
+}
+
+// ── PRIORITY LOG ──
+window.addPriorityChange=function(){
+  const task=document.getElementById('plTask').value.trim();
+  const from=document.getElementById('plFrom').value;
+  const to=document.getElementById('plTo').value;
+  const reason=document.getElementById('plReason').value.trim();
+  const auth=document.getElementById('plAuth').value.trim();
+  if(!task){alert('Enter the task name');return;}
+  const now=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+  const entry={time:now,task,from,to,reason,auth,by:me.name,shift:currentShift};
+  if(!S().priorityLog)S().priorityLog=[];
+  S().priorityLog.unshift(entry);
+  document.getElementById('plTask').value='';
+  document.getElementById('plReason').value='';
+  document.getElementById('plAuth').value='';
+  push();
+  renderPriorityLog();
+}
+function renderPriorityLog(){
+  const log=S().priorityLog||[];
+  const el=document.getElementById('priorityLogList');
+  if(!el)return;
+  if(log.length===0){el.innerHTML='<div class="log-empty">NO PRIORITY CHANGES LOGGED YET</div>';return;}
+  el.innerHTML=log.map(e=>`
+    <div class="plog-item ${e.to==='P0'?'plog-p0':e.to==='P1'?'plog-p1':'plog-other'}">
+      <div class="plog-top">
+        <span class="plog-badge">${e.from} → ${e.to}</span>
+        <span class="plog-task">${e.task}</span>
+        <span class="plog-time">${e.shift} · ${e.time}</span>
+      </div>
+      <div class="plog-detail">
+        ${e.reason?'<span class="plog-reason">Reason: '+e.reason+'</span>':''}
+        ${e.auth?'<span class="plog-auth">Auth: '+e.auth+'</span>':''}
+        <span class="plog-by">Logged by: ${e.by}</span>
+      </div>
+    </div>`).join('');
+}
+
+// ── HANDOFF ──
+window.saveHandoff=function(){
+  S().handoffNote=document.getElementById('handoffInput').value;
+  push();
+  alert('Handoff saved — incoming shift will see this when they open the tracker.');
+}
+function renderHandoff(){
+  // show incoming handoff from OTHER shift
+  const otherShift=currentShift==='AM'?'PM':'AM';
+  const note=state[otherShift].handoffNote||'';
+  const el=document.getElementById('incomingHandoff');
+  if(el)el.textContent=note||'No handoff note from '+otherShift+' shift yet.';
+  const myEl=document.getElementById('handoffInput');
+  if(myEl&&document.activeElement!==myEl)myEl.value=S().handoffNote||'';
+}
+
+// ── CELL RENDER ──
+function renderCell(id){
+  const c=S().cells[id];
+  const dt=dtLocal[id];
+  const lab=TERRAN.includes(id)?'T':'TT';
+  const lastEdit=[...S().moveLog].reverse().find(e=>e.cell===id);
+  const edName=lastEdit?lastEdit.by:'';
+  const dtLbl=dt.totalMin>0?dt.totalMin+'m':'—';
+  return `
+  <div class="cell-card st-${c.status}" id="card-${id}">
+    <div class="cell-hdr">
+      <div style="display:flex;align-items:center;gap:5px;">
+        <div class="cell-id">CELL ${id} <span style="font-size:0.5rem;color:var(--muted)">${lab}</span></div>
+        <div class="cell-editor" id="editor-${id}" style="${edName?'':'display:none'}">${edName}</div>
+      </div>
+      <button class="badge b-${c.status}" id="badge-${id}" onclick="cycleStatus('${id}')">${c.status.toUpperCase()}</button>
+    </div>
+    <div class="cell-body">
+      <div class="cell-row"><div class="ri">🧑‍✈️</div><div class="rl">Pilot 1</div>
+        <select class="ci pilot-select" id="pilot-${id}" onchange="handleChange('${id}','pilot',{value:this.value,getAttribute:()=>'${c.pilot}',setAttribute:()=>{}});this.setAttribute('data-prev',this.value);updateMap();">
+          ${pilotOptions(c.pilot)}
+        </select>
+      </div>
+      <div class="cell-row"><div class="ri">🧑‍✈️</div><div class="rl">Pilot 2</div>
+        <select class="ci pilot-select" id="pilot2-${id}" onchange="handleChange('${id}','pilot2',{value:this.value,getAttribute:()=>'${c.pilot2||''}',setAttribute:()=>{}});this.setAttribute('data-prev',this.value);">
+          ${pilotOptions(c.pilot2||'')}
+        </select>
+      </div>
+      <div class="cell-row"><div class="ri">🤖</div><div class="rl">Robot</div>
+        <input class="ci" id="robot-${id}" value="${c.robot}" placeholder="Unit # / ID" data-prev="${c.robot}" onblur="handleChange('${id}','robot',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">📜</div><div class="rl">Script</div>
+        <input class="ci" id="script-${id}" value="${c.script}" placeholder="Script name" data-prev="${c.script}" onblur="handleChange('${id}','script',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">🔬</div><div class="rl">Researcher</div>
+        <input class="ci" id="researcher-${id}" value="${c.researcher}" placeholder="Name or none" data-prev="${c.researcher}" onblur="handleChange('${id}','researcher',this)" oninput="autoSave()">
+      </div>
+      <div class="cell-row"><div class="ri">🕐</div><div class="rl">Arrival</div>
+        <input class="ci" id="resArrival-${id}" type="time" value="${c.resArrival||''}" data-prev="${c.resArrival||''}" onblur="handleChange('${id}','resArrival',this)" oninput="autoSave()" style="max-width:108px;">
+      </div>
+      <div class="cell-notes">
+        <div class="cn-block cn-lead"><div class="cn-lbl">🎯 Lead</div>
+          <textarea class="cn-ta" placeholder="Lead note..." oninput="cellNote('${id}','noteLead',this)">${c.noteLead||''}</textarea></div>
+        <div class="cn-block cn-res"><div class="cn-lbl">🔬 Researcher</div>
+          <textarea class="cn-ta" placeholder="Researcher note..." oninput="cellNote('${id}','noteRes',this)">${c.noteRes||''}</textarea></div>
+        <div class="cn-block cn-pilot"><div class="cn-lbl">🧑‍✈️ Pilot</div>
+          <textarea class="cn-ta" placeholder="Pilot note..." oninput="cellNote('${id}','notePilot',this)">${c.notePilot||''}</textarea></div>
+      </div>
+      <div class="dt-row">
+        <div class="dt-lbl">⏱ Down</div>
+        <button class="dt-btn ${dt.running?'dt-stop':'dt-start'}" id="dtbtn-${id}" onclick="toggleDT('${id}')">${dt.running?'STOP':'START'}</button>
+        <div class="dt-disp" id="dtd-${id}">${dt.running?'RUNNING...':dtLbl}</div>
+        <div class="dt-tot" id="dtt-${id}">${dt.totalMin>0?dt.totalMin+'m total':''}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── BLUEPRINT MAP UPDATE ──
+const STATUS_FILLS = {
+  active: 'rgba(52,211,153,0.13)',
+  down: 'rgba(248,113,113,0.2)',
+  eval: 'rgba(251,191,36,0.16)',
+  idle: 'rgba(107,143,122,0.09)'
+};
+const ROBOT_COLORS = { active:'#34d399', down:'#f87171', eval:'#fbbf24', idle:'#6b8f7a' };
+
+function updateMap() {
+  ALL.forEach(id => {
+    const c = S().cells[id];
+    const dt = dtLocal[id];
+    const status = c.status || 'active';
+
+    // ── TERRAN (A-D): update SVG elements ──
+    if (TERRAN.includes(id)) {
+      // update pilot and robot rect fills via style (overrides class)
+      const pilotRect = document.getElementById('svg-pilot-'+id);
+      const robotRect = document.getElementById('svg-robot-'+id);
+      if (pilotRect) pilotRect.style.fill = STATUS_FILLS[status];
+      if (robotRect) robotRect.style.fill = STATUS_FILLS[status];
+
+      // update robot icon color
+      const robotGroup = document.getElementById('svgrobot-'+id);
+      if (robotGroup) {
+        robotGroup.querySelectorAll('ellipse,line').forEach(el => {
+          el.style.stroke = ROBOT_COLORS[status];
+        });
+        const dot = robotGroup.querySelector('circle');
+        if (dot) dot.style.fill = ROBOT_COLORS[status];
+      }
+
+      // update text fields in pilot square
+      const setText = (elId, val) => { const el=document.getElementById(elId); if(el) el.textContent=val; };
+      setText('svgp-'+id, c.pilot ? (c.pilot2 ? c.pilot+' / '+c.pilot2 : c.pilot) : 'No pilot');
+      setText('svgr-'+id, c.robot ? '🤖 '+c.robot : 'No robot');
+      setText('svgs-'+id, c.script ? c.script.slice(0,18) : 'No script');
+      setText('svgres-'+id, c.researcher && c.researcher.toLowerCase()!=='none' ? '🔬 '+c.researcher.slice(0,14) : '');
+      setText('svgdt-'+id, dt.totalMin > 0 ? '⏱ '+dt.totalMin+'m down' : '');
+      // update robot unit number in robot square
+      const rnEl = document.getElementById('svgrnum-'+id);
+      if(rnEl) rnEl.textContent = c.robot ? 'UNIT '+c.robot : '—';
+    }
+
+    // ── TATOOINE (E-J): update simple bp-cells ──
+    const mapCell = document.getElementById('map-'+id);
+    if (mapCell) {
+      mapCell.className = 'bp-cell st-' + status;
+      const setText2 = (elId, val) => { const el=document.getElementById(elId); if(el) el.textContent=val; };
+      setText2('map-pilot-'+id, c.pilot || '— no pilot');
+      setText2('map-robot-'+id, c.robot ? '🤖 '+c.robot : '— no robot');
+      setText2('map-script-'+id, c.script ? c.script.slice(0,14) : '— no script');
+      setText2('map-res-'+id, c.researcher && c.researcher.toLowerCase()!=='none' ? '🔬 '+c.researcher : '');
+      setText2('map-dt-'+id, dt.totalMin > 0 ? '⏱ '+dt.totalMin+'m' : '');
+    }
+  });
+}
+
+// click map cell → scroll to card and highlight
+window.scrollToCard = function(id) {
+  const card = document.getElementById('card-'+id);
+  if (card) {
+    card.scrollIntoView({behavior:'smooth', block:'center'});
+    // highlight map cell briefly
+    const mapCell = document.getElementById('map-'+id);
+    if (mapCell) {
+      mapCell.classList.add('highlighted');
+      setTimeout(() => mapCell.classList.remove('highlighted'), 1500);
+    }
+    // flash the card
+    card.style.transition = 'box-shadow 0.3s';
+    card.style.boxShadow = '0 0 0 2px var(--green), 0 0 20px rgba(52,211,153,0.3)';
+    setTimeout(() => { card.style.boxShadow = ''; }, 1500);
+  }
+}
+
+// ── SHIFT ASSIGNMENT ──
+function pilotOptions(selectedName) {
+  const blank = `<option value="">— Select pilot —</option>`;
+  return blank + PILOTS.map(p => {
+    const sel = p.name === selectedName ? 'selected' : '';
+    const orca = p.orca ? ' ✅' : '';
+    return `<option value="${p.name}" ${sel}>${p.name}${orca}</option>`;
+  }).join('');
+}
+
+window.shiftPilotChange = function(shift, cellId, val, field) {
+  field = field || 'pilot';
+  if (!S().shiftAssign) S().shiftAssign = {AM:{}, PM:{}};
+  if (!S().shiftAssign[shift]) S().shiftAssign[shift] = {};
+  if (!S().shiftAssign[shift][cellId]) S().shiftAssign[shift][cellId] = {};
+  S().shiftAssign[shift][cellId][field] = val;
+  // sync to cell card if matches current shift
+  if (shift === currentShift) {
+    S().cells[cellId][field] = val;
+    const inp = document.getElementById(field+'-'+cellId);
+    if (inp) inp.value = val;
+    updateMap();
+  }
+  autoSave();
+}
+
+window.addCalledOut = function() {
+  const sel = document.getElementById('calledOutSelect');
+  if (!sel || !sel.value) return;
+  if (!S().calledOut) S().calledOut = [];
+  if (!S().calledOut.includes(sel.value)) {
+    S().calledOut.push(sel.value);
+    renderShiftTab();
+    push();
+  }
+  sel.value = '';
+}
+
+window.removeCalledOut = function(name) {
+  S().calledOut = (S().calledOut||[]).filter(n => n !== name);
+  renderShiftTab();
+  push();
+}
+
+function renderShiftTab() {
+  const amAssign = S().shiftAssign?.AM || {};
+  const pmAssign = S().shiftAssign?.PM || {};
+  const calledOut = S().calledOut || [];
+  const assignedNames = [...Object.values(amAssign), ...Object.values(pmAssign), ...calledOut].filter(Boolean);
+  const orcaOnFloor = PILOTS.filter(p => Object.values(amAssign).includes(p.name) && p.orca).length;
+  const nonOrcaOnFloor = PILOTS.filter(p => Object.values(amAssign).includes(p.name) && !p.orca).length;
+
+  const shiftEl = document.getElementById('shiftTabContent');
+  if (!shiftEl) return;
+
+  shiftEl.innerHTML = `
+  <div class="shift-grid">
+    <!-- AM SHIFT -->
+    <div class="shift-col">
+      <div class="shift-col-hdr shift-am">🌅 AM SHIFT</div>
+      ${ALL.map(id => `
+      <div class="shift-row">
+        <div class="shift-cell-id">CELL ${id}</div>
+        <div style="display:flex;flex-direction:column;gap:4px;flex:1;">
+          <select class="shift-select" onchange="shiftPilotChange('AM','${id}',this.value,'pilot')">
+            ${pilotOptions(amAssign[id]?.pilot||'')}
+          </select>
+          <select class="shift-select" style="border-color:rgba(52,211,153,0.06);" onchange="shiftPilotChange('AM','${id}',this.value,'pilot2')">
+            ${pilotOptions(amAssign[id]?.pilot2||'')}
+          </select>
+        </div>
+        <div class="shift-orca-badge" style="display:flex;flex-direction:column;gap:4px;">
+          <span>${amAssign[id]?.pilot ? (PILOTS.find(p=>p.name===amAssign[id].pilot)?.orca ? '✅':'⬜') : ''}</span>
+          <span>${amAssign[id]?.pilot2 ? (PILOTS.find(p=>p.name===amAssign[id].pilot2)?.orca ? '✅':'⬜') : ''}</span>
+        </div>
+      </div>`).join('')}
+    </div>
+
+    <!-- PM SHIFT -->
+    <div class="shift-col">
+      <div class="shift-col-hdr shift-pm">🌙 PM SHIFT</div>
+      ${ALL.map(id => `
+      <div class="shift-row">
+        <div class="shift-cell-id">CELL ${id}</div>
+        <div style="display:flex;flex-direction:column;gap:4px;flex:1;">
+          <select class="shift-select" onchange="shiftPilotChange('PM','${id}',this.value,'pilot')">
+            ${pilotOptions(pmAssign[id]?.pilot||'')}
+          </select>
+          <select class="shift-select" style="border-color:rgba(52,211,153,0.06);" onchange="shiftPilotChange('PM','${id}',this.value,'pilot2')">
+            ${pilotOptions(pmAssign[id]?.pilot2||'')}
+          </select>
+        </div>
+        <div class="shift-orca-badge" style="display:flex;flex-direction:column;gap:4px;">
+          <span>${pmAssign[id]?.pilot ? (PILOTS.find(p=>p.name===pmAssign[id].pilot)?.orca ? '✅':'⬜') : ''}</span>
+          <span>${pmAssign[id]?.pilot2 ? (PILOTS.find(p=>p.name===pmAssign[id].pilot2)?.orca ? '✅':'⬜') : ''}</span>
+        </div>
+      </div>`).join('')}
+    </div>
+  </div>
+
+  <!-- CALLED OUT -->
+  <div class="shift-calledout">
+    <div class="shift-section-title">🚫 CALLED OUT TODAY</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+      <select class="shift-select" id="calledOutSelect" style="max-width:200px;">
+        <option value="">+ Add pilot...</option>
+        ${PILOTS.map(p=>`<option value="${p.name}">${p.name}</option>`).join('')}
+      </select>
+      <button class="shift-add-btn" onclick="addCalledOut()">ADD</button>
+      ${calledOut.map(n=>`<div class="shift-chip-red">${n} <button onclick="removeCalledOut('${n}')">×</button></div>`).join('')}
+    </div>
+  </div>
+
+  <!-- STATS -->
+  <div class="shift-stats">
+    <div class="shift-stat-box">
+      <div class="shift-stat-num" style="color:var(--green)">${orcaOnFloor}</div>
+      <div class="shift-stat-lbl">ORCA READY ON FLOOR</div>
+    </div>
+    <div class="shift-stat-box">
+      <div class="shift-stat-num" style="color:var(--amber)">${nonOrcaOnFloor}</div>
+      <div class="shift-stat-lbl">NOT YET ORCA</div>
+    </div>
+    <div class="shift-stat-box">
+      <div class="shift-stat-num" style="color:var(--red)">${calledOut.length}</div>
+      <div class="shift-stat-lbl">CALLED OUT</div>
+    </div>
+    <div class="shift-stat-box">
+      <div class="shift-stat-num" style="color:var(--muted)">${PILOTS.length - assignedNames.length}</div>
+      <div class="shift-stat-lbl">UNASSIGNED</div>
+    </div>
+  </div>`;
+}
+
+// ── RENDER ALL ──
+function renderAll(){
+  document.getElementById('terranCells').innerHTML=TERRAN.map(renderCell).join('');
+  document.getElementById('tatooineCells').innerHTML=TATOOINE.map(renderCell).join('');
+  // notes
+  ['notesLead','notesRes','notesPilot'].forEach(f=>{
+    const el=document.getElementById(f);
+    if(el&&document.activeElement!==el)el.value=S()[f]||'';
+  });
+  if(S().notesLeadTS)document.getElementById('ts-lead').textContent=S().notesLeadTS;
+  if(S().notesResTS)document.getElementById('ts-res').textContent=S().notesResTS;
+  if(S().notesPilotTS)document.getElementById('ts-pilot').textContent=S().notesPilotTS;
+  renderBench();renderOC();renderLog();updateSummary();renderOpsBoard();renderPriorityLog();renderHandoff();updateMap();renderShiftTab();
+}
+
+// ── LOG ──
+function renderLog(){
+  const log=[...S().moveLog].reverse().slice(0,100);
+  document.getElementById('sMoves').textContent=S().moveLog.length;
+  const body=document.getElementById('logBody');
+  if(!body)return;
+  if(log.length===0){body.innerHTML=`<tr><td colspan="6" class="log-empty">NO MOVES YET THIS SHIFT</td></tr>`;return;}
+  body.innerHTML=log.map(e=>`<tr>
+    <td class="lt">${e.time}</td><td class="lw">${e.by||'?'}</td>
+    <td class="lc">CELL ${e.cell}</td><td class="lf">${(e.field||'').toUpperCase()}</td>
+    <td><span class="lfrom">${e.from||'—'}</span></td><td><span class="lto">${e.to||'—'}</span></td>
+  </tr>`).join('');
+}
+
+// ── SUMMARY ──
+function updateSummary(){
+  const cells=Object.values(S().cells);
+  document.getElementById('sActive').textContent=cells.filter(c=>c.status==='active').length;
+  document.getElementById('sDown').textContent=cells.filter(c=>c.status==='down').length;
+  document.getElementById('sEval').textContent=cells.filter(c=>c.status==='eval').length;
+  document.getElementById('sPilots').textContent=cells.filter(c=>c.pilot&&c.pilot.trim()).length;
+  document.getElementById('sRes').textContent=cells.filter(c=>c.researcher&&c.researcher.trim()&&!['none','n/a','—'].includes(c.researcher.toLowerCase())).length;
+  const ta=TERRAN.filter(id=>S().cells[id].status==='active').length;
+  const tta=TATOOINE.filter(id=>S().cells[id].status==='active').length;
+  document.getElementById('statT').textContent=ta+'/'+TERRAN.length+' ACTIVE';
+  document.getElementById('statTT').textContent=tta+'/'+TATOOINE.length+' ACTIVE';
+}
+
+// ── TABS ──
+window.switchTab=function(name,btn){
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  const tab=document.getElementById('tab-'+name);
+  if(tab)tab.classList.add('active');
+  if(btn)btn.classList.add('active');
+  // update map when switching to floor tab
+  if(name==='floor')setTimeout(updateMap,50);
+}
+
+// ── AUTO SAVE ──
+let asT;
+window.autoSave=function(){clearTimeout(asT);asT=setTimeout(push,2000);}
+window.forceSave=function(){push();const s=document.getElementById('saveSt');s.classList.add('show');setTimeout(()=>s.classList.remove('show'),2000);}
+
+// ── EXPORT ──
+window.exportShift=function(){
+  const s=S();
+  const now=new Date().toLocaleString();
+  let out=`FLOOR TRACKER EXPORT\nDate: ${now}\nShift: ${currentShift}\nBy: ${me.name}\n${'='.repeat(55)}\n\n`;
+  out+=`MISSION: ${s.mission||'—'}\nP0: ${s.p0task||'—'}\nP1: ${s.p1task||'—'}\nDATA GOAL: ${s.dataGoal||'—'} hrs | ACHIEVED: ${s.dataAchieved||'—'} hrs\n\n`;
+  ['LAB 1 — TERRAN','LAB 2 — TATOOINE'].forEach((lab,li)=>{
+    out+=lab+'\n'+'-'.repeat(35)+'\n';
+    (li===0?TERRAN:TATOOINE).forEach(id=>{
+      const c=s.cells[id];const dt=dtLocal[id];
+      out+=`Cell ${id} [${c.status.toUpperCase()}]\n`;
+      out+=`  Pilot: ${c.pilot||'—'} | Robot: ${c.robot||'—'} | Script: ${c.script||'—'}\n`;
+      out+=`  Researcher: ${c.researcher||'—'} | Arrival: ${c.resArrival||'—'} | Downtime: ${dt.totalMin||0}m\n`;
+      if(c.noteLead)out+=`  Lead: ${c.noteLead}\n`;
+      if(c.noteRes)out+=`  Research: ${c.noteRes}\n`;
+      if(c.notePilot)out+=`  Pilot: ${c.notePilot}\n`;
+      out+='\n';
+    });
+  });
+  if(s.bench.length>0)out+=`CALLED OUT\n${s.bench.map(n=>'  🚫 '+n).join('\n')}\n\n`;
+  if(s.priorityLog&&s.priorityLog.length>0){
+    out+=`PRIORITY CHANGES\n${'-'.repeat(35)}\n`;
+    s.priorityLog.forEach(e=>out+=`  [${e.time}] ${e.task}: ${e.from}→${e.to} | ${e.reason||'—'} | Auth: ${e.auth||'—'}\n`);
+    out+='\n';
+  }
+  if(s.moveLog.length>0){
+    out+=`MOVEMENT LOG\n${'-'.repeat(35)}\n`;
+    s.moveLog.forEach(e=>out+=`  [${e.time}] ${(e.by||'?').padEnd(12)} Cell ${e.cell} | ${(e.field||'').toUpperCase().padEnd(10)} | ${(e.from||'—').padEnd(16)} → ${e.to||'—'}\n`);
+    out+='\n';
+  }
+  if(s.handoffNote)out+=`HANDOFF TO NEXT SHIFT\n${'-'.repeat(35)}\n${s.handoffNote}\n\n`;
+  if(s.notesLead)out+=`LEAD NOTES\n${'-'.repeat(35)}\n${s.notesLead}\n\n`;
+  if(s.notesRes)out+=`RESEARCHER NOTES\n${'-'.repeat(35)}\n${s.notesRes}\n\n`;
+  if(s.notesPilot)out+=`PILOT NOTES\n${'-'.repeat(35)}\n${s.notesPilot}\n\n`;
+  const blob=new Blob([out],{type:'text/plain'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`floor-${currentShift}-${new Date().toISOString().slice(0,10)}-${me.name}.txt`;
+  a.click();
+}
+
+window.resetShift=function(){
+  if(!confirm('Clear '+currentShift+' shift data?'))return;
+  state[currentShift]=blankShiftState();
+  ALL.forEach(id=>{dtLocal[id]={running:false,start:null,totalMin:0};});
+  push();renderAll();
+}
+
+setInterval(()=>{
+  const n=new Date();
+  document.getElementById('clockDisplay').textContent=n.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+},1000);
+</script>
+<style>
+:root{--bg:#060d0a;--panel:#0d1f17;--panel2:#122618;--border:rgba(52,211,153,0.15);--green:#34d399;--gdim:#1a4d36;--amber:#fbbf24;--red:#f87171;--blue:#60a5fa;--purple:#a78bfa;--muted:#6b8f7a;--text:#e2efe8;--white:#f0faf4;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-serif;min-height:100vh;padding-bottom:80px;}
+#loginScreen{position:fixed;inset:0;background:var(--bg);z-index:999;display:flex;align-items:center;justify-content:center;padding:20px;}
+.login-box{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:32px;max-width:340px;width:100%;text-align:center;}
+.login-logo{font-family:'IBM Plex Mono',monospace;font-size:1rem;color:var(--green);letter-spacing:3px;font-weight:600;margin-bottom:6px;}
+.login-sub{font-size:0.74rem;color:var(--muted);margin-bottom:22px;line-height:1.5;}
+.login-label{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;text-align:left;margin-bottom:5px;}
+.login-input,.login-select{width:100%;background:rgba(52,211,153,0.05);border:1px solid var(--border);border-radius:7px;padding:9px 12px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.86rem;margin-bottom:10px;}
+.login-input:focus,.login-select:focus{outline:none;border-color:var(--green);}
+.login-select option{background:var(--panel);}
+.login-btn{width:100%;background:var(--green);border:none;border-radius:7px;padding:11px;color:var(--bg);font-family:'IBM Plex Mono',monospace;font-size:0.76rem;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;}
+.login-error{color:var(--red);font-size:0.7rem;margin-top:7px;display:none;}
+header{background:var(--panel);border-bottom:1px solid var(--border);padding:9px 12px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;flex-wrap:wrap;gap:6px;}
+.brand{font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:var(--green);letter-spacing:2px;font-weight:600;}
+.live-wrap{display:flex;align-items:center;gap:5px;font-family:'IBM Plex Mono',monospace;font-size:0.56rem;color:var(--green);letter-spacing:1px;}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1.4s infinite;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:0.2;}}
+.who-badge{background:var(--gdim);border:1px solid rgba(52,211,153,0.3);border-radius:100px;padding:3px 10px;font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--green);letter-spacing:1px;cursor:pointer;}
+.clock{font-family:'IBM Plex Mono',monospace;font-size:0.8rem;color:var(--amber);font-weight:600;}
+/* SHIFT TOGGLE — now clearly shows which shift is active */
+.shift-toggle{display:flex;background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden;gap:2px;padding:2px;}
+.shift-btn{padding:6px 16px;border:none;background:transparent;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:0.7rem;letter-spacing:1.5px;cursor:pointer;border-radius:6px;transition:all 0.2s;font-weight:600;}
+.shift-btn.active{background:var(--green);color:var(--bg);}
+.shift-label{font-family:'IBM Plex Mono',monospace;font-size:0.6rem;color:var(--green);letter-spacing:1px;align-self:center;}
+.tab-bar{display:flex;background:var(--panel2);border-bottom:1px solid var(--border);overflow-x:auto;}
+.tab-btn{padding:8px 14px;border:none;background:transparent;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:0.58rem;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;border-bottom:2px solid transparent;transition:all 0.2s;white-space:nowrap;}
+.tab-btn.active{color:var(--green);border-bottom-color:var(--green);}
+.summary-bar{display:flex;background:var(--panel2);border-bottom:1px solid var(--border);overflow-x:auto;}
+.sum-item{padding:6px 12px;border-right:1px solid var(--border);text-align:center;min-width:72px;flex-shrink:0;}
+.sum-num{font-family:'IBM Plex Mono',monospace;font-size:1rem;font-weight:600;}
+.sum-label{font-size:0.5rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-top:1px;}
+.cg{color:var(--green);}.cr{color:var(--red);}.ca{color:var(--amber);}.cb{color:var(--blue);}.cp{color:var(--purple);}
+.quick-bar{background:rgba(248,113,113,0.05);border-bottom:1px solid rgba(248,113,113,0.15);padding:6px 12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.qb-label{font-family:'IBM Plex Mono',monospace;font-size:0.55rem;color:var(--red);letter-spacing:1.5px;text-transform:uppercase;flex-shrink:0;}
+.oc-bar{background:rgba(96,165,250,0.04);border-bottom:1px solid rgba(96,165,250,0.12);padding:6px 12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.oc-label{font-family:'IBM Plex Mono',monospace;font-size:0.55rem;color:var(--blue);letter-spacing:1.5px;text-transform:uppercase;flex-shrink:0;}
+.chip{border-radius:100px;padding:3px 8px;font-size:0.66rem;display:flex;align-items:center;gap:4px;}
+.chip-red{background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);color:var(--red);}
+.chip-blue{background:rgba(96,165,250,0.1);border:1px solid rgba(96,165,250,0.25);color:var(--blue);}
+.chip button{background:none;border:none;cursor:pointer;font-size:0.72rem;opacity:0.6;padding:0;color:inherit;}
+.add-chip{border-radius:100px;padding:3px 8px;font-size:0.62rem;cursor:pointer;border-style:dashed;}
+.add-chip-red{background:rgba(248,113,113,0.05);border:1px dashed rgba(248,113,113,0.3);color:rgba(248,113,113,0.5);}
+.add-chip-blue{background:rgba(96,165,250,0.05);border:1px dashed rgba(96,165,250,0.3);color:rgba(96,165,250,0.5);}
+.tab-content{display:none;}.tab-content.active{display:block;}
+
+/* OPS BOARD */
+.ops-wrap{padding:12px;display:flex;flex-direction:column;gap:10px;}
+.ops-section{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+.ops-hdr{padding:9px 12px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);}
+.ops-hdr-mission{background:rgba(52,211,153,0.06);}
+.ops-hdr-priority{background:rgba(248,113,113,0.06);}
+.ops-hdr-data{background:rgba(251,191,36,0.06);}
+.ops-hdr-goals{background:rgba(96,165,250,0.06);}
+.ops-icon{font-size:1.1rem;flex-shrink:0;}
+.ops-title{font-family:'IBM Plex Mono',monospace;font-size:0.7rem;font-weight:600;letter-spacing:1px;text-transform:uppercase;}
+.ops-title-green{color:var(--green);}.ops-title-red{color:var(--red);}.ops-title-amber{color:var(--amber);}.ops-title-blue{color:var(--blue);}
+.ops-sub{font-size:0.64rem;color:var(--muted);margin-left:4px;}
+.ops-body{padding:10px 12px;display:flex;flex-direction:column;gap:7px;}
+.ops-row{display:flex;align-items:center;gap:8px;}
+.ops-lbl{font-family:'IBM Plex Mono',monospace;font-size:0.56rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;width:56px;flex-shrink:0;}
+.ops-input{flex:1;background:rgba(52,211,153,0.04);border:1px solid rgba(52,211,153,0.1);border-radius:5px;padding:5px 8px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.78rem;}
+.ops-input:focus{outline:none;border-color:rgba(52,211,153,0.35);}
+.ops-input::placeholder{color:rgba(107,143,122,0.4);font-size:0.72rem;}
+.ops-p0{border-color:rgba(248,113,113,0.2);background:rgba(248,113,113,0.04);}
+.ops-p0:focus{border-color:rgba(248,113,113,0.4);}
+.ops-p1{border-color:rgba(251,191,36,0.2);background:rgba(251,191,36,0.04);}
+.ops-p1:focus{border-color:rgba(251,191,36,0.4);}
+.data-row{display:flex;gap:8px;}
+.data-box{flex:1;background:rgba(251,191,36,0.05);border:1px solid rgba(251,191,36,0.15);border-radius:7px;padding:10px;text-align:center;}
+.data-num{font-family:'IBM Plex Mono',monospace;font-size:1.3rem;font-weight:600;color:var(--amber);}
+.data-num input{background:transparent;border:none;color:var(--amber);font-family:'IBM Plex Mono',monospace;font-size:1.3rem;font-weight:600;width:60px;text-align:center;}
+.data-num input:focus{outline:none;}
+.data-lbl{font-size:0.58rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-top:3px;}
+.goals-ta{width:100%;background:transparent;border:none;padding:2px 0;color:var(--green);font-family:'IBM Plex Mono',monospace;font-size:0.72rem;resize:none;min-height:60px;line-height:1.7;}
+.goals-ta:focus{outline:none;}
+.goals-ta::placeholder{color:rgba(107,143,122,0.4);}
+.add-goal-btn{background:rgba(96,165,250,0.1);border:1px solid rgba(96,165,250,0.2);border-radius:5px;padding:5px 12px;color:var(--blue);font-family:'IBM Plex Mono',monospace;font-size:0.6rem;cursor:pointer;letter-spacing:1px;margin-top:6px;}
+
+/* PRIORITY LOG */
+.plog-wrap{padding:12px;display:flex;flex-direction:column;gap:10px;}
+.plog-form{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;}
+.plog-form-title{font-family:'IBM Plex Mono',monospace;font-size:0.68rem;color:var(--amber);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;}
+.plog-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:8px;}
+.plog-input{background:rgba(52,211,153,0.04);border:1px solid rgba(52,211,153,0.12);border-radius:5px;padding:6px 9px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.76rem;width:100%;}
+.plog-input:focus{outline:none;border-color:rgba(52,211,153,0.35);}
+.plog-input::placeholder{color:rgba(107,143,122,0.4);font-size:0.7rem;}
+.plog-select{background:rgba(52,211,153,0.04);border:1px solid rgba(52,211,153,0.12);border-radius:5px;padding:6px 9px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.76rem;width:100%;}
+.plog-submit{background:var(--amber);border:none;border-radius:6px;padding:8px 18px;color:var(--bg);font-family:'IBM Plex Mono',monospace;font-size:0.65rem;font-weight:600;letter-spacing:1px;text-transform:uppercase;cursor:pointer;margin-top:6px;}
+.plog-list{display:flex;flex-direction:column;gap:7px;}
+.plog-item{background:var(--panel);border-radius:8px;padding:10px 12px;border-left:3px solid;}
+.plog-p0{border-left-color:var(--red);background:rgba(248,113,113,0.04);}
+.plog-p1{border-left-color:var(--amber);background:rgba(251,191,36,0.04);}
+.plog-other{border-left-color:var(--muted);}
+.plog-top{display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;}
+.plog-badge{font-family:'IBM Plex Mono',monospace;font-size:0.62rem;font-weight:600;padding:2px 8px;border-radius:100px;background:rgba(248,113,113,0.15);color:var(--red);}
+.plog-task{font-size:0.8rem;color:var(--white);font-weight:600;flex:1;}
+.plog-time{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--muted);}
+.plog-detail{display:flex;gap:12px;flex-wrap:wrap;font-size:0.7rem;color:var(--muted);}
+.plog-reason{color:var(--text);}
+.plog-auth{color:var(--blue);}
+
+/* HANDOFF */
+.handoff-wrap{padding:12px;display:flex;flex-direction:column;gap:10px;}
+.handoff-incoming{background:rgba(52,211,153,0.05);border:1px solid rgba(52,211,153,0.2);border-radius:10px;padding:14px;}
+.handoff-title{font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:var(--green);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;}
+.handoff-content{font-size:0.8rem;color:var(--text);line-height:1.6;min-height:40px;white-space:pre-wrap;}
+.handoff-outgoing{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px;}
+.handoff-ta{width:100%;background:rgba(52,211,153,0.04);border:1px solid rgba(52,211,153,0.12);border-radius:7px;padding:9px 11px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.8rem;resize:vertical;min-height:120px;line-height:1.6;}
+.handoff-ta:focus{outline:none;border-color:rgba(52,211,153,0.3);}
+.handoff-ta::placeholder{color:rgba(107,143,122,0.4);font-size:0.74rem;line-height:1.7;}
+.handoff-save{background:var(--green);border:none;border-radius:6px;padding:8px 18px;color:var(--bg);font-family:'IBM Plex Mono',monospace;font-size:0.65rem;font-weight:600;letter-spacing:1px;text-transform:uppercase;cursor:pointer;margin-top:8px;}
+
+/* LABS */
+.labs-wrap{padding:12px 12px 0;}
+.lab-sec{margin-bottom:16px;}
+.lab-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border);}
+.lab-name{font-family:'IBM Plex Mono',monospace;font-size:0.78rem;font-weight:600;color:var(--green);letter-spacing:2px;}
+.lab-sub{font-size:0.6rem;color:var(--muted);margin-left:6px;}
+.lab-stat{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--muted);}
+/* CELLS GRID — 4 across for Terran, auto for Tatooine */
+.cells-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:9px;}
+.cells-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;}
+.cell-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+.cell-card.st-active{border-color:rgba(52,211,153,0.3);}
+.cell-card.st-down{border-color:rgba(248,113,113,0.45);}
+.cell-card.st-eval{border-color:rgba(251,191,36,0.45);}
+.cell-card.st-idle{border-color:rgba(107,143,122,0.25);}
+.cell-hdr{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:var(--panel2);border-bottom:1px solid var(--border);}
+.cell-id{font-family:'IBM Plex Mono',monospace;font-size:0.86rem;font-weight:600;color:var(--white);}
+.cell-editor{font-family:'IBM Plex Mono',monospace;font-size:0.5rem;color:var(--green);background:rgba(52,211,153,0.07);border:1px solid rgba(52,211,153,0.15);border-radius:100px;padding:2px 6px;}
+.badge{font-family:'IBM Plex Mono',monospace;font-size:0.5rem;letter-spacing:1.5px;padding:3px 7px;border-radius:100px;text-transform:uppercase;cursor:pointer;border:none;}
+.b-active{background:rgba(52,211,153,0.12);color:var(--green);border:1px solid rgba(52,211,153,0.3);}
+.b-down{background:rgba(248,113,113,0.12);color:var(--red);border:1px solid rgba(248,113,113,0.3);}
+.b-eval{background:rgba(251,191,36,0.12);color:var(--amber);border:1px solid rgba(251,191,36,0.3);}
+.b-idle{background:rgba(107,143,122,0.1);color:var(--muted);border:1px solid rgba(107,143,122,0.2);}
+.cell-body{padding:8px 10px;display:flex;flex-direction:column;gap:5px;}
+.cell-row{display:flex;align-items:center;gap:5px;}
+.ri{font-size:0.78rem;flex-shrink:0;width:16px;text-align:center;}
+.rl{font-family:'IBM Plex Mono',monospace;font-size:0.52rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;width:62px;flex-shrink:0;}
+.ci{flex:1;background:rgba(52,211,153,0.04);border:1px solid rgba(52,211,153,0.1);border-radius:4px;padding:4px 6px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.73rem;min-width:0;}
+.ci:focus{outline:none;border-color:rgba(52,211,153,0.4);}
+.ci::placeholder{color:rgba(107,143,122,0.38);font-size:0.67rem;}
+.cell-notes{display:flex;flex-direction:column;gap:4px;padding-top:4px;border-top:1px solid var(--border);}
+.cn-block{border-radius:4px;overflow:hidden;border:1px solid;}
+.cn-lead{border-color:rgba(52,211,153,0.2);}.cn-res{border-color:rgba(251,191,36,0.2);}.cn-pilot{border-color:rgba(96,165,250,0.2);}
+.cn-lbl{font-family:'IBM Plex Mono',monospace;font-size:0.5rem;letter-spacing:1px;text-transform:uppercase;padding:2px 6px;}
+.cn-lead .cn-lbl{background:rgba(52,211,153,0.08);color:var(--green);}
+.cn-res .cn-lbl{background:rgba(251,191,36,0.08);color:var(--amber);}
+.cn-pilot .cn-lbl{background:rgba(96,165,250,0.08);color:var(--blue);}
+.cn-ta{width:100%;background:var(--panel);border:none;border-top:1px solid rgba(255,255,255,0.04);padding:4px 6px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.68rem;resize:none;min-height:40px;line-height:1.5;}
+.cn-ta:focus{outline:none;}
+.cn-ta::placeholder{color:rgba(107,143,122,0.35);font-size:0.64rem;}
+.dt-row{display:flex;align-items:center;gap:5px;padding-top:4px;border-top:1px solid var(--border);}
+.dt-lbl{font-family:'IBM Plex Mono',monospace;font-size:0.49rem;color:var(--red);letter-spacing:1px;text-transform:uppercase;}
+.dt-btn{padding:2px 7px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:0.52rem;letter-spacing:1px;border:none;cursor:pointer;}
+.dt-start{background:rgba(248,113,113,0.12);color:var(--red);border:1px solid rgba(248,113,113,0.3);}
+.dt-stop{background:rgba(52,211,153,0.12);color:var(--green);border:1px solid rgba(52,211,153,0.3);}
+.dt-disp{font-family:'IBM Plex Mono',monospace;font-size:0.6rem;color:var(--red);flex:1;}
+.dt-tot{font-family:'IBM Plex Mono',monospace;font-size:0.52rem;color:var(--muted);}
+
+/* NOTES TAB */
+.notes-wrap{padding:12px;display:flex;flex-direction:column;gap:10px;}
+.notes-block{border-radius:9px;overflow:hidden;border:1px solid;}
+.nb-lead{border-color:rgba(52,211,153,0.25);}.nb-res{border-color:rgba(251,191,36,0.25);}.nb-pilot{border-color:rgba(96,165,250,0.25);}
+.nb-hdr{display:flex;align-items:flex-start;gap:8px;padding:9px 12px;}
+.nb-lead .nb-hdr{background:rgba(52,211,153,0.06);}
+.nb-res .nb-hdr{background:rgba(251,191,36,0.06);}
+.nb-pilot .nb-hdr{background:rgba(96,165,250,0.06);}
+.nb-icon{font-size:1.1rem;flex-shrink:0;}
+.nb-title{font-family:'IBM Plex Mono',monospace;font-size:0.68rem;font-weight:600;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px;}
+.nb-lead .nb-title{color:var(--green);}.nb-res .nb-title{color:var(--amber);}.nb-pilot .nb-title{color:var(--blue);}
+.nb-sub{font-size:0.62rem;color:var(--muted);line-height:1.4;}
+.nb-ts{margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:0.5rem;color:var(--muted);white-space:nowrap;flex-shrink:0;}
+.nb-ta{width:100%;background:var(--panel);border:none;border-top:1px solid rgba(255,255,255,0.05);padding:9px 12px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.78rem;resize:vertical;min-height:90px;line-height:1.6;}
+.nb-ta:focus{outline:none;}
+.nb-ta::placeholder{color:rgba(107,143,122,0.38);font-size:0.72rem;line-height:1.7;}
+
+/* LOG */
+.log-wrap{padding:12px;}
+.log-table-wrap{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden;overflow-x:auto;}
+table{width:100%;border-collapse:collapse;min-width:460px;}
+th{background:var(--panel2);font-family:'IBM Plex Mono',monospace;font-size:0.5rem;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;padding:6px 9px;text-align:left;border-bottom:1px solid var(--border);}
+td{padding:6px 9px;font-size:0.7rem;border-bottom:1px solid rgba(52,211,153,0.05);}
+tr:last-child td{border-bottom:none;}
+.lt{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--muted);white-space:nowrap;}
+.lw{font-size:0.62rem;color:var(--blue);}
+.lc{font-family:'IBM Plex Mono',monospace;font-size:0.62rem;color:var(--green);font-weight:600;}
+.lf{font-size:0.6rem;color:var(--amber);}
+.lfrom{color:var(--red);}.lto{color:var(--green);}
+.log-empty{text-align:center;padding:24px;font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:var(--muted);}
+
+.action-bar{display:flex;gap:6px;padding:8px 12px;border-top:1px solid var(--border);background:var(--panel);position:fixed;bottom:0;left:0;right:0;z-index:50;flex-wrap:wrap;}
+.action-btn{padding:7px 12px;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:0.58rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border:none;}
+.btn-save{background:var(--green);color:var(--bg);font-weight:600;}
+.btn-reset{background:transparent;color:var(--red);border:1px solid rgba(248,113,113,0.3);}
+.btn-export{background:transparent;color:var(--blue);border:1px solid rgba(96,165,250,0.3);}
+.save-st{font-family:'IBM Plex Mono',monospace;font-size:0.54rem;color:var(--green);align-self:center;letter-spacing:1px;opacity:0;transition:opacity 0.3s;}
+.save-st.show{opacity:1;}
+.sync-st{font-family:'IBM Plex Mono',monospace;font-size:0.54rem;color:var(--muted);align-self:center;letter-spacing:1px;margin-left:auto;}
+/* SVG MAP */
+.svg-wrap{background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden;padding:4px;}
+.svg-wrap svg .cell-pilot:hover,.svg-wrap svg .cell-robot:hover{filter:brightness(1.3);cursor:pointer;}
+
+/* FLOOR LAYOUT — side by side */
+.floor-layout{display:flex;gap:0;align-items:flex-start;}
+.blueprint-panel{width:300px;flex-shrink:0;padding:12px;position:sticky;top:110px;border-right:1px solid var(--border);background:var(--panel);max-height:calc(100vh - 120px);overflow-y:auto;display:block;}
+.cards-panel{flex:1;padding:12px;min-width:0;}
+.bp-title{font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:var(--green);letter-spacing:2px;text-transform:uppercase;margin-bottom:12px;font-weight:600;}
+.bp-lab{margin-bottom:16px;}
+.bp-lab-name{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;padding-bottom:5px;border-bottom:1px solid var(--border);}
+.bp-row{display:flex;gap:6px;flex-wrap:wrap;}
+.bp-cell{
+  background:var(--panel2);
+  border:1px solid var(--border);
+  border-radius:7px;
+  padding:7px 8px;
+  cursor:pointer;
+  transition:all 0.2s;
+  min-width:62px;
+  flex:1;
+  position:relative;
+}
+.bp-cell:hover{border-color:rgba(52,211,153,0.5);transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3);}
+/* status colors on map cells */
+.bp-cell.st-active{border-color:rgba(52,211,153,0.35);background:rgba(52,211,153,0.06);}
+.bp-cell.st-down{border-color:rgba(248,113,113,0.45);background:rgba(248,113,113,0.08);}
+.bp-cell.st-eval{border-color:rgba(251,191,36,0.45);background:rgba(251,191,36,0.08);}
+.bp-cell.st-idle{border-color:rgba(107,143,122,0.3);background:rgba(107,143,122,0.05);}
+.bp-cell-id{font-family:'IBM Plex Mono',monospace;font-size:0.85rem;font-weight:700;color:var(--white);margin-bottom:4px;}
+.bp-cell-pilot{font-size:0.68rem;color:var(--text);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;}
+.bp-cell-robot{font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--green);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:2px;}
+.bp-cell-script{font-size:0.56rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px;}
+.bp-cell-res{font-size:0.56rem;color:var(--amber);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.bp-cell-dt{font-family:'IBM Plex Mono',monospace;font-size:0.54rem;color:var(--red);margin-top:2px;}
+/* legend */
+.bp-legend{margin-top:14px;padding-top:10px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:5px;}
+.bp-legend-title{font-family:'IBM Plex Mono',monospace;font-size:0.54rem;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;}
+.bp-legend-row{display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:0.58rem;color:var(--muted);letter-spacing:1px;}
+.bp-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.bp-dot-active{background:var(--green);}
+.bp-dot-idle{background:var(--muted);}
+.bp-dot-eval{background:var(--amber);}
+.bp-dot-down{background:var(--red);}
+/* highlight on map when card is scrolled to */
+.bp-cell.highlighted{box-shadow:0 0 0 2px var(--green),0 0 16px rgba(52,211,153,0.3);}
+@media(max-width:900px){.floor-layout{flex-direction:column;}.blueprint-panel{width:100%;position:relative;top:0;max-height:none;border-right:none;border-bottom:1px solid var(--border);}.bp-row{flex-wrap:nowrap;overflow-x:auto;}.bp-cell{min-width:100px;}}
+@media(max-width:550px){.cells-grid{grid-template-columns:1fr;}.plog-form-grid{grid-template-columns:1fr;}}
+/* PILOT DROPDOWN */
+.pilot-select{flex:1;background:rgba(52,211,153,0.04);border:1px solid rgba(52,211,153,0.1);border-radius:4px;padding:4px 6px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.73rem;min-width:0;cursor:pointer;}
+.pilot-select:focus{outline:none;border-color:rgba(52,211,153,0.4);}
+.pilot-select option{background:#0d1f17;color:var(--text);}
+
+/* SHIFT TAB */
+.shift-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;}
+.shift-col{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+.shift-col-hdr{padding:10px 14px;font-family:'IBM Plex Mono',monospace;font-size:0.72rem;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;border-bottom:1px solid var(--border);}
+.shift-am{background:rgba(251,191,36,0.08);color:var(--amber);}
+.shift-pm{background:rgba(96,165,250,0.08);color:var(--blue);}
+.shift-row{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid rgba(52,211,153,0.06);}
+.shift-row:last-child{border-bottom:none;}
+.shift-cell-id{font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:var(--green);font-weight:600;letter-spacing:1px;width:52px;flex-shrink:0;}
+.shift-select{flex:1;background:rgba(52,211,153,0.04);border:1px solid rgba(52,211,153,0.1);border-radius:5px;padding:5px 8px;color:var(--text);font-family:'IBM Plex Sans',sans-serif;font-size:0.76rem;cursor:pointer;}
+.shift-select:focus{outline:none;border-color:var(--green);}
+.shift-select option{background:#0d1f17;}
+.shift-orca-badge{font-size:0.8rem;width:20px;text-align:center;flex-shrink:0;}
+.shift-calledout{background:rgba(248,113,113,0.05);border:1px solid rgba(248,113,113,0.2);border-radius:10px;padding:12px 14px;margin-bottom:12px;}
+.shift-section-title{font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:var(--red);letter-spacing:1.5px;text-transform:uppercase;}
+.shift-add-btn{background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.3);border-radius:5px;padding:5px 12px;color:var(--red);font-family:'IBM Plex Mono',monospace;font-size:0.62rem;cursor:pointer;letter-spacing:1px;}
+.shift-chip-red{background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:100px;padding:3px 10px;font-size:0.72rem;color:var(--red);display:flex;align-items:center;gap:5px;}
+.shift-chip-red button{background:none;border:none;color:var(--red);cursor:pointer;font-size:0.8rem;opacity:0.6;padding:0;}
+.shift-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+.shift-stat-box{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center;}
+.shift-stat-num{font-family:'IBM Plex Mono',monospace;font-size:1.4rem;font-weight:700;}
+.shift-stat-lbl{font-family:'IBM Plex Mono',monospace;font-size:0.52rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-top:3px;}
+@media(max-width:650px){.shift-grid{grid-template-columns:1fr;}.shift-stats{grid-template-columns:repeat(2,1fr);}}
+
+::-webkit-scrollbar{height:3px;width:3px;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+</style>
+</head>
+<body>
+
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="login-logo">🤖 LIVE FLOOR</div>
+    <div class="login-sub">Stunt & Doubles · Atlas Program<br>Sign in once — remembered next time</div>
+    <div class="login-label">Your Name</div>
+    <input class="login-input" id="loginName" placeholder="e.g. Eli, Max, Jesse..."/>
+    <div class="login-label">Your Role</div>
+    <select class="login-select" id="loginRole">
+      <option>Lead</option><option>Co-Lead</option><option>Researcher</option><option>OC</option>
+    </select>
+    <button class="login-btn" onclick="doLogin()">JOIN FLOOR</button>
+    <div class="login-error" id="loginError">Please enter your name</div>
+  </div>
+</div>
+
+<header>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <div class="brand">🤖 LIVE FLOOR</div>
+    <div class="live-wrap"><div class="live-dot"></div>FIREBASE</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+    <div class="who-badge" id="whoBadge" onclick="doLogout()" title="Click to sign out">—</div>
+    <div class="clock" id="clockDisplay">--:--:--</div>
+    <!-- SHIFT TOGGLE — two clearly separated buttons -->
+    <div style="display:flex;align-items:center;gap:6px;">
+      <div class="shift-toggle">
+        <button class="shift-btn active" id="btnAM" onclick="setShift('AM')">AM</button>
+        <button class="shift-btn" id="btnPM" onclick="setShift('PM')">PM</button>
+      </div>
+      <div class="shift-label" id="shiftLabel">AM SHIFT</div>
+    </div>
+  </div>
+</header>
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('ops',this)">📋 Ops Board</button>
+  <button class="tab-btn" onclick="switchTab('floor',this)">🗺 Floor</button>
+  <button class="tab-btn" onclick="switchTab('shift',this)">👥 Shift</button>
+  <button class="tab-btn" onclick="switchTab('handoff',this)">🔁 Handoff</button>
+  <button class="tab-btn" onclick="switchTab('priority',this)">⚡ P0/P1 Log</button>
+  <button class="tab-btn" onclick="switchTab('notes',this)">📝 Notes</button>
+  <button class="tab-btn" onclick="switchTab('log',this)">📋 Move Log <span style="background:rgba(251,191,36,0.2);color:var(--amber);border-radius:100px;padding:1px 5px;font-size:0.5rem;margin-left:2px;" id="sMoves">0</span></button>
+</div>
+
+<div class="summary-bar">
+  <div class="sum-item"><div class="sum-num cg" id="sActive">0</div><div class="sum-label">Active</div></div>
+  <div class="sum-item"><div class="sum-num cr" id="sDown">0</div><div class="sum-label">Down</div></div>
+  <div class="sum-item"><div class="sum-num ca" id="sEval">0</div><div class="sum-label">Eval</div></div>
+  <div class="sum-item"><div class="sum-num cb" id="sPilots">0</div><div class="sum-label">Pilots</div></div>
+  <div class="sum-item"><div class="sum-num cr" id="sBench">0</div><div class="sum-label">Out</div></div>
+  <div class="sum-item"><div class="sum-num ca" id="sRes">0</div><div class="sum-label">Research</div></div>
+</div>
+
+<div class="quick-bar">
+  <div class="qb-label">🚫 Called Out</div>
+  <div id="benchChips" style="display:flex;gap:5px;flex-wrap:wrap;flex:1;"></div>
+  <button class="add-chip add-chip-red" onclick="addBench()">+ Add</button>
+</div>
+<div class="oc-bar">
+  <div class="oc-label">👁 OC Pilots</div>
+  <div id="ocChips" style="display:flex;gap:5px;flex-wrap:wrap;flex:1;"></div>
+  <button class="add-chip add-chip-blue" onclick="addOC()">+ OC</button>
+</div>
+
+<!-- OPS BOARD TAB -->
+<div class="tab-content active" id="tab-ops">
+  <div class="ops-wrap">
+    <!-- MISSION -->
+    <div class="ops-section">
+      <div class="ops-hdr ops-hdr-mission">
+        <div class="ops-icon">🎯</div>
+        <div><div class="ops-title ops-title-green">Mission of the Day</div><div class="ops-sub">What are we focused on this shift</div></div>
+      </div>
+      <div class="ops-body">
+        <input class="ops-input" id="mission" placeholder="e.g. Complete 10hrs of Physical Assembly data — focus on hex bolt placement..." oninput="opsChange('mission',this)">
+      </div>
+    </div>
+    <!-- PRIORITIES -->
+    <div class="ops-section">
+      <div class="ops-hdr ops-hdr-priority">
+        <div class="ops-icon">⚡</div>
+        <div><div class="ops-title ops-title-red">Priority Status</div><div class="ops-sub">Current P0 and P1 tasks</div></div>
+      </div>
+      <div class="ops-body">
+        <div class="ops-row">
+          <div class="ops-lbl" style="color:var(--red);">P0 NOW</div>
+          <input class="ops-input ops-p0" id="p0task" placeholder="Task name — cells assigned..." oninput="opsChange('p0task',this)">
+        </div>
+        <div class="ops-row">
+          <div class="ops-lbl" style="color:var(--amber);">P1 ACTIVE</div>
+          <input class="ops-input ops-p1" id="p1task" placeholder="Task name — cells assigned..." oninput="opsChange('p1task',this)">
+        </div>
+      </div>
+    </div>
+    <!-- DATA TARGET -->
+    <div class="ops-section">
+      <div class="ops-hdr ops-hdr-data">
+        <div class="ops-icon">📊</div>
+        <div><div class="ops-title ops-title-amber">Data Target</div><div class="ops-sub">Hours goal vs achieved this shift</div></div>
+      </div>
+      <div class="ops-body">
+        <div class="data-row">
+          <div class="data-box">
+            <div class="data-num"><input id="dataGoal" placeholder="10" oninput="opsChange('dataGoal',this)" style="width:70px;"></div>
+            <div class="data-lbl">Goal (hrs)</div>
+          </div>
+          <div class="data-box">
+            <div class="data-num"><input id="dataAchieved" placeholder="0" oninput="opsChange('dataAchieved',this)" style="width:70px;"></div>
+            <div class="data-lbl">Achieved (hrs)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- COMPLETED GOALS -->
+    <div class="ops-section">
+      <div class="ops-hdr ops-hdr-goals">
+        <div class="ops-icon">✅</div>
+        <div><div class="ops-title ops-title-blue">Completed Goals</div><div class="ops-sub">What we achieved this shift</div></div>
+        <button class="add-goal-btn" onclick="addCompletedGoal()" style="margin-left:auto;">+ Add Win</button>
+      </div>
+      <div class="ops-body">
+        <textarea class="goals-ta" id="completedGoals" placeholder="Completed goals will appear here as you add them..." readonly></textarea>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FLOOR TAB -->
+<div class="tab-content" id="tab-floor">
+  <div style="padding:12px;display:flex;flex-direction:column;gap:16px;">
+
+    <!-- MAP FULL WIDTH ON TOP -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;">
+      <div style="padding:8px 14px;background:var(--panel2);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:0.68rem;color:var(--green);letter-spacing:2px;font-weight:600;">🗺 LAB 1 — TERRAN · LIVE BLUEPRINT</div>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <div style="display:flex;align-items:center;gap:4px;"><div style="width:8px;height:8px;background:var(--green);border-radius:2px;"></div><span style="font-family:'IBM Plex Mono',monospace;font-size:0.55rem;color:var(--muted);">ACTIVE</span></div>
+          <div style="display:flex;align-items:center;gap:4px;"><div style="width:8px;height:8px;background:var(--red);border-radius:2px;"></div><span style="font-family:'IBM Plex Mono',monospace;font-size:0.55rem;color:var(--muted);">DOWN</span></div>
+          <div style="display:flex;align-items:center;gap:4px;"><div style="width:8px;height:8px;background:var(--amber);border-radius:2px;"></div><span style="font-family:'IBM Plex Mono',monospace;font-size:0.55rem;color:var(--muted);">EVAL</span></div>
+          <div style="display:flex;align-items:center;gap:4px;"><div style="width:8px;height:8px;background:var(--muted);border-radius:2px;"></div><span style="font-family:'IBM Plex Mono',monospace;font-size:0.55rem;color:var(--muted);">IDLE</span></div>
+        </div>
+      </div>
+
+      <!-- BIG SVG MAP — matches SmartDraw exactly -->
+      <svg id="floorSVG" viewBox="0 0 960 580" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;background:#060d0a;">
+        <defs>
+          <style>
+            .svgcell{cursor:pointer;transition:fill 0.25s;}
+            .svgcell:hover{filter:brightness(1.3);}
+            .sv-active{fill:rgba(52,211,153,0.13);}
+            .sv-down{fill:rgba(248,113,113,0.2);}
+            .sv-eval{fill:rgba(251,191,36,0.16);}
+            .sv-idle{fill:rgba(107,143,122,0.09);}
+            .sv-wall{stroke:#34d399;stroke-width:3;fill:#0b1e14;}
+            .sv-cell-border{stroke:#1e3a2a;stroke-width:1.5;fill:none;}
+            .sv-divider-wall{fill:#0d1f17;stroke:#34d399;stroke-width:2.5;}
+            .sv-thin-div{stroke:#34d399;stroke-width:1.5;stroke-dasharray:8,4;}
+            .sv-door-gap{stroke:#060d0a;stroke-width:6;}
+            .sv-door-arc{stroke:#fbbf24;stroke-width:2;fill:none;stroke-dasharray:5,3;}
+            .sv-room-label{font-family:"IBM Plex Mono",monospace;font-size:14px;fill:#1e4a2a;letter-spacing:3px;text-transform:uppercase;}
+            .sv-cell-id{font-family:"IBM Plex Mono",monospace;font-size:13px;font-weight:700;fill:#f0faf4;letter-spacing:1px;}
+            .sv-zone{font-family:"IBM Plex Mono",monospace;font-size:9px;fill:#6b8f7a;letter-spacing:1px;}
+            .sv-info{font-family:"IBM Plex Sans",sans-serif;font-size:10px;fill:#94a3b8;}
+            .sv-green{font-family:"IBM Plex Mono",monospace;font-size:10px;fill:#34d399;}
+            .sv-amber{font-family:"IBM Plex Sans",sans-serif;font-size:9px;fill:#fbbf24;}
+            .sv-red{font-family:"IBM Plex Mono",monospace;font-size:9px;fill:#f87171;}
+            .sv-door-lbl{font-family:"IBM Plex Mono",monospace;font-size:9px;fill:#fbbf24;letter-spacing:1px;}
+            .sv-unit-big{font-family:"IBM Plex Mono",monospace;font-size:28px;font-weight:700;fill:#34d399;}
+            .sv-unit-label{font-family:"IBM Plex Mono",monospace;font-size:9px;fill:#6b8f7a;letter-spacing:1px;}
+            .sv-desk{fill:none;stroke:#1e3a2a;stroke-width:1.2;}
+            .sv-table{fill:rgba(251,191,36,0.07);stroke:rgba(251,191,36,0.25);stroke-width:1;}
+            .sv-chair{fill:rgba(96,165,250,0.08);stroke:rgba(96,165,250,0.25);stroke-width:1;}
+          </style>
+        </defs>
+
+        <!-- OUTER ROOM -->
+        <rect x="70" y="30" width="820" height="450" class="sv-wall" rx="2"/>
+
+
+
+        <!-- DOORS -->
+        <!-- Top center -->
+        <line x1="410" y1="30" x2="550" y2="30" class="sv-door-gap"/>
+        <path d="M410,30 A140,90 0 0,1 550,30" class="sv-door-arc"/>
+        <text x="478" y="22" class="sv-door-lbl" text-anchor="middle">DOOR</text>
+        <!-- Left upper -->
+        <line x1="70" y1="80" x2="70" y2="200" class="sv-door-gap"/>
+        <path d="M70,80 A120,120 0 0,0 70,200" class="sv-door-arc"/>
+        <text x="18" y="143" class="sv-door-lbl" text-anchor="middle">DOOR</text>
+        <!-- Right upper -->
+        <line x1="890" y1="80" x2="890" y2="200" class="sv-door-gap"/>
+        <path d="M890,80 A120,120 0 0,1 890,200" class="sv-door-arc"/>
+        <text x="920" y="143" class="sv-door-lbl" text-anchor="middle">DOOR</text>
+        <!-- Bottom left -->
+        <line x1="110" y1="480" x2="225" y2="480" class="sv-door-gap"/>
+        <path d="M110,480 A115,80 0 0,0 225,480" class="sv-door-arc"/>
+        <text x="165" y="498" class="sv-door-lbl" text-anchor="middle">DOOR</text>
+        <!-- Bottom center -->
+        <line x1="395" y1="480" x2="565" y2="480" class="sv-door-gap"/>
+        <path d="M395,480 A170,100 0 0,0 565,480" class="sv-door-arc"/>
+        <text x="478" y="498" class="sv-door-lbl" text-anchor="middle">DOOR</text>
+        <!-- Right lower -->
+        <line x1="890" y1="300" x2="890" y2="420" class="sv-door-gap"/>
+        <path d="M890,300 A120,120 0 0,1 890,420" class="sv-door-arc"/>
+        <text x="920" y="363" class="sv-door-lbl" text-anchor="middle">DOOR</text>
+
+        <!-- CENTER DIVIDER — tables and chairs -->
+        <!-- Thin wall lines on each side -->
+        <line x1="452" y1="68" x2="452" y2="460" stroke="#34d399" stroke-width="2"/>
+        <line x1="480" y1="68" x2="480" y2="460" stroke="#34d399" stroke-width="2"/>
+
+        <!-- Chair 1 — top -->
+        <rect x="453" y="80" width="26" height="26" class="sv-chair" rx="13"/>
+        <text x="466" y="97" class="sv-zone" text-anchor="middle" style="font-size:7px;fill:#60a5fa;">🪑</text>
+
+        <!-- Table 1 -->
+        <rect x="453" y="118" width="26" height="100" class="sv-table" rx="3"/>
+        <text x="466" y="173" class="sv-zone" text-anchor="middle" transform="rotate(-90,466,173)" style="font-size:7px;">TABLE 1</text>
+
+        <!-- Chair 2 — middle -->
+        <rect x="453" y="230" width="26" height="26" class="sv-chair" rx="13"/>
+        <text x="466" y="247" class="sv-zone" text-anchor="middle" style="font-size:7px;fill:#60a5fa;">🪑</text>
+
+        <!-- Table 2 -->
+        <rect x="453" y="268" width="26" height="100" class="sv-table" rx="3"/>
+        <text x="466" y="323" class="sv-zone" text-anchor="middle" transform="rotate(-90,466,323)" style="font-size:7px;">TABLE 2</text>
+
+        <!-- Chair 3 — bottom -->
+        <rect x="453" y="380" width="26" height="26" class="sv-chair" rx="13"/>
+        <text x="466" y="397" class="sv-zone" text-anchor="middle" style="font-size:7px;fill:#60a5fa;">🪑</text>
+
+        <!-- ══════════════════════════════════════════ -->
+        <!-- LEFT SECTION  A & B                       -->
+        <!-- TOP ROW = ROBOT squares (unit number bold) -->
+        <!-- BOT ROW = PILOT/OCU info                  -->
+        <!-- ══════════════════════════════════════════ -->
+
+        <!-- TOP LEFT — Cell A ROBOT square -->
+        <rect id="svg-robot-A" x="82" y="72" width="182" height="175" class="svgcell sv-active" rx="3" onclick="scrollToCard('A')"/>
+        <rect x="82" y="72" width="182" height="175" class="sv-cell-border" rx="3"/>
+        <text x="95" y="92" class="sv-cell-id">CELL A</text>
+        <text x="95" y="106" class="sv-zone">ROBOT UNIT</text>
+        <text x="173" y="168" class="sv-unit-big" text-anchor="middle" id="svgrnum-A">—</text>
+        <text x="173" y="186" class="sv-unit-label" text-anchor="middle">UNIT NUMBER</text>
+
+        <!-- TOP RIGHT — Cell B ROBOT square -->
+        <rect id="svg-robot-B" x="270" y="72" width="176" height="175" class="svgcell sv-active" rx="3" onclick="scrollToCard('B')"/>
+        <rect x="270" y="72" width="176" height="175" class="sv-cell-border" rx="3"/>
+        <text x="283" y="92" class="sv-cell-id">CELL B</text>
+        <text x="283" y="106" class="sv-zone">ROBOT UNIT</text>
+        <text x="358" y="168" class="sv-unit-big" text-anchor="middle" id="svgrnum-B">—</text>
+        <text x="358" y="186" class="sv-unit-label" text-anchor="middle">UNIT NUMBER</text>
+
+        <!-- THIN DIVIDER between robot row and pilot row -->
+        <line x1="82" y1="252" x2="447" y2="252" class="sv-thin-div"/>
+
+        <!-- BOTTOM LEFT — Cell A PILOT/OCU info -->
+        <rect id="svg-pilot-A" x="82" y="258" width="182" height="194" class="svgcell sv-active" rx="3" onclick="scrollToCard('A')"/>
+        <rect x="82" y="258" width="182" height="194" class="sv-cell-border" rx="3"/>
+        <text x="95" y="278" class="sv-cell-id">CELL A</text>
+        <text x="95" y="293" class="sv-zone">PILOT / OCU</text>
+        <text x="95" y="314" class="sv-info" id="svgp-A">No pilot</text>
+        <text x="95" y="332" class="sv-green" id="svgr-A">No robot</text>
+        <text x="95" y="349" class="sv-info" id="svgs-A">No script</text>
+        <text x="95" y="365" class="sv-amber" id="svgres-A"></text>
+        <text x="95" y="381" class="sv-red" id="svgdt-A"></text>
+        <rect x="88" y="434" width="36" height="7" class="sv-desk" rx="1"/>
+        <rect x="100" y="438" width="12" height="5" class="sv-desk"/>
+
+        <!-- BOTTOM RIGHT — Cell B PILOT/OCU info -->
+        <rect id="svg-pilot-B" x="270" y="258" width="176" height="194" class="svgcell sv-active" rx="3" onclick="scrollToCard('B')"/>
+        <rect x="270" y="258" width="176" height="194" class="sv-cell-border" rx="3"/>
+        <text x="283" y="278" class="sv-cell-id">CELL B</text>
+        <text x="283" y="293" class="sv-zone">PILOT / OCU</text>
+        <text x="283" y="314" class="sv-info" id="svgp-B">No pilot</text>
+        <text x="283" y="332" class="sv-green" id="svgr-B">No robot</text>
+        <text x="283" y="349" class="sv-info" id="svgs-B">No script</text>
+        <text x="283" y="365" class="sv-amber" id="svgres-B"></text>
+        <text x="283" y="381" class="sv-red" id="svgdt-B"></text>
+        <rect x="276" y="434" width="36" height="7" class="sv-desk" rx="1"/>
+        <rect x="288" y="438" width="12" height="5" class="sv-desk"/>
+
+        <!-- ══════════════════════════════════════════ -->
+        <!-- RIGHT SECTION  C & D                      -->
+        <!-- TOP ROW = ROBOT squares                   -->
+        <!-- BOT ROW = PILOT/OCU info                  -->
+        <!-- ══════════════════════════════════════════ -->
+
+        <!-- TOP LEFT — Cell C ROBOT square -->
+        <rect id="svg-robot-C" x="486" y="72" width="182" height="175" class="svgcell sv-active" rx="3" onclick="scrollToCard('C')"/>
+        <rect x="486" y="72" width="182" height="175" class="sv-cell-border" rx="3"/>
+        <text x="499" y="92" class="sv-cell-id">CELL C</text>
+        <text x="499" y="106" class="sv-zone">ROBOT UNIT</text>
+        <text x="577" y="168" class="sv-unit-big" text-anchor="middle" id="svgrnum-C">—</text>
+        <text x="577" y="186" class="sv-unit-label" text-anchor="middle">UNIT NUMBER</text>
+
+        <!-- TOP RIGHT — Cell D ROBOT square -->
+        <rect id="svg-robot-D" x="674" y="72" width="204" height="175" class="svgcell sv-active" rx="3" onclick="scrollToCard('D')"/>
+        <rect x="674" y="72" width="204" height="175" class="sv-cell-border" rx="3"/>
+        <text x="687" y="92" class="sv-cell-id">CELL D</text>
+        <text x="687" y="106" class="sv-zone">ROBOT UNIT</text>
+        <text x="776" y="168" class="sv-unit-big" text-anchor="middle" id="svgrnum-D">—</text>
+        <text x="776" y="186" class="sv-unit-label" text-anchor="middle">UNIT NUMBER</text>
+
+        <!-- THIN DIVIDER between robot row and pilot row -->
+        <line x1="486" y1="252" x2="878" y2="252" class="sv-thin-div"/>
+
+        <!-- BOTTOM LEFT — Cell C PILOT/OCU info -->
+        <rect id="svg-pilot-C" x="486" y="258" width="182" height="194" class="svgcell sv-active" rx="3" onclick="scrollToCard('C')"/>
+        <rect x="486" y="258" width="182" height="194" class="sv-cell-border" rx="3"/>
+        <text x="499" y="278" class="sv-cell-id">CELL C</text>
+        <text x="499" y="293" class="sv-zone">PILOT / OCU</text>
+        <text x="499" y="314" class="sv-info" id="svgp-C">No pilot</text>
+        <text x="499" y="332" class="sv-green" id="svgr-C">No robot</text>
+        <text x="499" y="349" class="sv-info" id="svgs-C">No script</text>
+        <text x="499" y="365" class="sv-amber" id="svgres-C"></text>
+        <text x="499" y="381" class="sv-red" id="svgdt-C"></text>
+        <rect x="492" y="434" width="36" height="7" class="sv-desk" rx="1"/>
+        <rect x="504" y="438" width="12" height="5" class="sv-desk"/>
+
+        <!-- BOTTOM RIGHT — Cell D PILOT/OCU info -->
+        <rect id="svg-pilot-D" x="674" y="258" width="204" height="194" class="svgcell sv-active" rx="3" onclick="scrollToCard('D')"/>
+        <rect x="674" y="258" width="204" height="194" class="sv-cell-border" rx="3"/>
+        <text x="687" y="278" class="sv-cell-id">CELL D</text>
+        <text x="687" y="293" class="sv-zone">PILOT / OCU</text>
+        <text x="687" y="314" class="sv-info" id="svgp-D">No pilot</text>
+        <text x="687" y="332" class="sv-green" id="svgr-D">No robot</text>
+        <text x="687" y="349" class="sv-info" id="svgs-D">No script</text>
+        <text x="687" y="365" class="sv-amber" id="svgres-D"></text>
+        <text x="687" y="381" class="sv-red" id="svgdt-D"></text>
+        <rect x="680" y="434" width="36" height="7" class="sv-desk" rx="1"/>
+        <rect x="692" y="438" width="12" height="5" class="sv-desk"/>
+
+        <!-- CLICK HINT -->
+        <text x="480" y="500" class="sv-zone" text-anchor="middle" style="font-size:8px;fill:#1e4a2a;">CLICK ANY CELL TO JUMP TO ITS CARD ↓</text>
+      </svg>
+    </div>
+
+    <!-- LAB 1 TERRAN CELL CARDS — directly below Terran map -->
+    <div class="lab-sec">
+      <div class="lab-hdr">
+        <div style="display:flex;align-items:center;">
+          <div class="lab-name">LAB 1 — TERRAN</div><div class="lab-sub">A B C D</div>
+        </div>
+        <div class="lab-stat" id="statT">—</div>
+      </div>
+      <div class="cells-grid-4" id="terranCells"></div>
+    </div>
+
+    <!-- LAB 2 TATOOINE MAP -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;">
+      <div style="padding:8px 14px;background:var(--panel2);border-bottom:1px solid var(--border);">
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:0.68rem;color:var(--green);letter-spacing:2px;font-weight:600;">🗺 LAB 2 — TATOOINE · FLOOR MAP</div>
+      </div>
+      <div style="padding:10px;display:flex;gap:8px;flex-wrap:wrap;">
+        <div style="display:flex;flex-direction:column;gap:7px;min-width:120px;">
+          <div class="bp-cell" id="map-E" onclick="scrollToCard('E')"><div class="bp-cell-id">E</div><div class="bp-cell-pilot" id="map-pilot-E">—</div><div class="bp-cell-robot" id="map-robot-E">—</div><div class="bp-cell-script" id="map-script-E">—</div><div class="bp-cell-res" id="map-res-E"></div><div class="bp-cell-dt" id="map-dt-E"></div></div>
+          <div class="bp-cell" id="map-F" onclick="scrollToCard('F')"><div class="bp-cell-id">F</div><div class="bp-cell-pilot" id="map-pilot-F">—</div><div class="bp-cell-robot" id="map-robot-F">—</div><div class="bp-cell-script" id="map-script-F">—</div><div class="bp-cell-res" id="map-res-F"></div><div class="bp-cell-dt" id="map-dt-F"></div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;flex:1;min-width:240px;">
+          <div class="bp-cell" id="map-G" onclick="scrollToCard('G')"><div class="bp-cell-id">G</div><div class="bp-cell-pilot" id="map-pilot-G">—</div><div class="bp-cell-robot" id="map-robot-G">—</div><div class="bp-cell-script" id="map-script-G">—</div><div class="bp-cell-res" id="map-res-G"></div></div>
+          <div class="bp-cell" id="map-H" onclick="scrollToCard('H')"><div class="bp-cell-id">H</div><div class="bp-cell-pilot" id="map-pilot-H">—</div><div class="bp-cell-robot" id="map-robot-H">—</div><div class="bp-cell-script" id="map-script-H">—</div><div class="bp-cell-res" id="map-res-H"></div></div>
+          <div class="bp-cell" id="map-I" onclick="scrollToCard('I')"><div class="bp-cell-id">I</div><div class="bp-cell-pilot" id="map-pilot-I">—</div><div class="bp-cell-robot" id="map-robot-I">—</div><div class="bp-cell-script" id="map-script-I">—</div><div class="bp-cell-res" id="map-res-I"></div></div>
+          <div class="bp-cell" id="map-J" onclick="scrollToCard('J')"><div class="bp-cell-id">J</div><div class="bp-cell-pilot" id="map-pilot-J">—</div><div class="bp-cell-robot" id="map-robot-J">—</div><div class="bp-cell-script" id="map-script-J">—</div><div class="bp-cell-res" id="map-res-J"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LAB 2 TATOOINE CELL CARDS -->
+    <div class="lab-sec">
+      <div class="lab-hdr">
+        <div style="display:flex;align-items:center;">
+          <div class="lab-name">LAB 2 — TATOOINE</div><div class="lab-sub">E F G H I J</div>
+        </div>
+        <div class="lab-stat" id="statTT">—</div>
+      </div>
+      <div class="cells-grid" id="tatooineCells"></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- SHIFT TAB -->
+<div class="tab-content" id="tab-shift">
+  <div style="padding:12px;">
+    <div id="shiftTabContent"></div>
+  </div>
+</div>
+
+<!-- HANDOFF TAB -->
+<div class="tab-content" id="tab-handoff">
+  <div class="handoff-wrap">
+    <!-- INCOMING — from the OTHER shift -->
+    <div class="handoff-incoming">
+      <div class="handoff-title">📥 Incoming — From Other Shift</div>
+      <div class="handoff-content" id="incomingHandoff">No handoff note yet.</div>
+    </div>
+    <!-- OUTGOING — for the next shift -->
+    <div class="handoff-outgoing">
+      <div class="handoff-title" style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:var(--amber);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;">📤 Your Handoff — For Next Shift</div>
+      <div style="font-size:0.72rem;color:var(--muted);margin-bottom:8px;line-height:1.5;">Fill this in before you leave. The next shift sees this the moment they open the tracker.</div>
+      <textarea class="handoff-ta" id="handoffInput" placeholder="1. Priority status right now (P0/P1 tasks and which cells)&#10;2. Any robots currently down or flagged&#10;3. Researchers still expected or active&#10;4. Pilot flags — who needs coaching, who performed well&#10;5. One thing the incoming lead must know before they start"></textarea>
+      <button class="handoff-save" onclick="saveHandoff()">💾 Save Handoff for Next Shift</button>
+    </div>
+  </div>
+</div>
+
+<!-- PRIORITY LOG TAB -->
+<div class="tab-content" id="tab-priority">
+  <div class="plog-wrap">
+    <div class="plog-form">
+      <div class="plog-form-title">⚡ Log a Priority Change</div>
+      <div class="plog-form-grid">
+        <input class="plog-input" id="plTask" placeholder="Task name (e.g. Trim Sequencing)">
+        <input class="plog-input" id="plAuth" placeholder="Authorized by (e.g. Justin)">
+        <select class="plog-select" id="plFrom">
+          <option value="P3">From P3</option>
+          <option value="P2">From P2</option>
+          <option value="P1" selected>From P1</option>
+          <option value="P0">From P0</option>
+        </select>
+        <select class="plog-select" id="plTo">
+          <option value="P0" selected>To P0</option>
+          <option value="P1">To P1</option>
+          <option value="P2">To P2</option>
+          <option value="P3">To P3</option>
+        </select>
+      </div>
+      <input class="plog-input" id="plReason" placeholder="Reason for change (e.g. Research team needs 4 cells by end of shift)" style="width:100%;">
+      <button class="plog-submit" onclick="addPriorityChange()">LOG PRIORITY CHANGE</button>
+    </div>
+    <div class="plog-list" id="priorityLogList">
+      <div class="log-empty">NO PRIORITY CHANGES LOGGED YET</div>
+    </div>
+  </div>
+</div>
+
+<!-- NOTES TAB -->
+<div class="tab-content" id="tab-notes">
+  <div class="notes-wrap">
+    <div class="notes-block nb-lead">
+      <div class="nb-hdr"><div class="nb-icon">🎯</div>
+        <div><div class="nb-title">Lead Team Notes</div><div class="nb-sub">Reprioritizations · P0/P1 · Blockers · Decisions</div></div>
+        <div class="nb-ts" id="ts-lead"></div>
+      </div>
+      <textarea class="nb-ta" id="notesLead" placeholder="— P0/P1 changes and reason&#10;— Station decisions made&#10;— Blockers in ORCA/Buganizer&#10;— Key decisions this shift" oninput="noteChange('lead')"></textarea>
+    </div>
+    <div class="notes-block nb-res">
+      <div class="nb-hdr"><div class="nb-icon">🔬</div>
+        <div><div class="nb-title">Researcher Notes</div><div class="nb-sub">Eval sessions · Arrivals · Requests · Feedback</div></div>
+        <div class="nb-ts" id="ts-res"></div>
+      </div>
+      <textarea class="nb-ta" id="notesRes" placeholder="— Researcher name + arrival time&#10;— Cell evaluated and feedback&#10;— Demo requests from Amit" oninput="noteChange('res')"></textarea>
+    </div>
+    <div class="notes-block nb-pilot">
+      <div class="nb-hdr"><div class="nb-icon">🧑‍✈️</div>
+        <div><div class="nb-title">Pilot Notes</div><div class="nb-sub">Performance · Coaching · Issues reported</div></div>
+        <div class="nb-ts" id="ts-pilot"></div>
+      </div>
+      <textarea class="nb-ta" id="notesPilot" placeholder="— Who performed well today&#10;— Who needs coaching (composure, pace)&#10;— Script questions from pilots" oninput="noteChange('pilot')"></textarea>
+    </div>
+  </div>
+</div>
+
+<!-- LOG TAB -->
+<div class="tab-content" id="tab-log">
+  <div class="log-wrap">
+    <div class="log-table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>By</th><th>Cell</th><th>Field</th><th>From</th><th>To</th></tr></thead>
+        <tbody id="logBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="action-bar">
+  <button class="action-btn btn-save" onclick="forceSave()">💾 Save</button>
+  <button class="action-btn btn-export" onclick="exportShift()">📋 Export</button>
+  <button class="action-btn btn-reset" onclick="resetShift()">🔄 Clear Shift</button>
+  <span class="sync-st" id="syncSt">Connecting...</span>
+  <span class="save-st" id="saveSt">SAVED ✓</span>
+</div>
+</body>
+</html>
